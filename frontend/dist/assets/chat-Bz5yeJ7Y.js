@@ -1,0 +1,1 @@
+import{r as e}from"./request-C7Q4q7Z3.js";function r(s){return e.post("/chat/send",s)}function o(s=1,t=20){return e.get("/chat/sessions",{params:{page:s,size:t}})}function i(s,t=1,n=50){return e.get(`/chat/${s}/messages`,{params:{page:t,size:n}})}function u(s){return e.delete(`/chat/${s}`)}function c(){return e.post("/chat/new-session")}export{i as a,u as d,o as g,c as n,r as s};
