@@ -2,6 +2,7 @@ package com.legalassistant.agent;
 
 import dev.langchain4j.service.MemoryId;
 import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
 import dev.langchain4j.service.spring.AiService;
 
 @AiService
@@ -22,5 +23,5 @@ public interface LegalAssistantAgent {
             - 对于复杂案件分析，结合知识库和判例给出综合意见
             - 使用中文回答
             """)
-    String chat(@MemoryId String sessionId, String userMessage);
+    String chat(@MemoryId String sessionId, @UserMessage String userMessage);
 }
