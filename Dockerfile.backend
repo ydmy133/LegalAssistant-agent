@@ -1,0 +1,36 @@
+FROM maven:3.9.6-eclipse-temurin-17 AS build
+
+WORKDIR /app
+
+# 用阿里云 Maven 镜像，尽量提升国内构建成功率
+RUN mkdir -p /root/.m2 && \
+    printf '%s\n' \
+      '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"' \
+      '          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"' \
+      '          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">' \
+      '  <mirrors>' \
+      '    <mirror>' \
+      '      <id>aliyun</id>' \
+      '      <mirrorOf>central</mirrorOf>' \
+      '      <name>aliyun maven mirror</name>' \
+      '      <url>https://maven.aliyun.com/repository/public</url>' \
+      '    </mirror>' \
+      '  </mirrors>' \
+      '</settings>' \
+    > /root/.m2/settings.xml
+
+COPY backend /app/backend
+RUN for i in 1 2 3; do \
+      mvn -B -f /app/backend/pom.xml -DskipTests package && exit 0; \
+      echo "Maven build failed, retrying ($i/3)..." >&2; \
+      rm -rf /root/.m2/repository/io/netty /root/.m2/repository/org/apache/tika || true; \
+      sleep 5; \
+    done; \
+    exit 1
+
+FROM eclipse-temurin:17-jre-jammy
+WORKDIR /app
+COPY --from=build /app/backend/target/*.jar /app/app.jar
+EXPOSE 8080
+ENTRYPOINT ["java","-jar","/app/app.jar"]
+

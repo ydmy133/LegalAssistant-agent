@@ -1,0 +1,29 @@
+# 开发 compose 会覆盖前后端为挂载源码模式；端口由 FRONTEND_CONTAINER_PORT 控制（见 scripts/dev-up.sh）
+# 用法: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+# 停止: docker-compose -f docker-compose.yml -f docker-compose.dev.yml down
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend.dev
+    volumes:
+      - ./backend:/app
+      - maven-cache:/root/.m2
+      - backend-uploads:/app/uploads
+    # spring-boot:run 首次启动会编译，比生产 jar 慢一些
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend.dev
+    environment:
+      # Vite 在容器内把 /api 代理到后端服务名
+      VITE_API_PROXY: http://backend:8080
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+
+volumes:
+  maven-cache:
+  frontend-node-modules:

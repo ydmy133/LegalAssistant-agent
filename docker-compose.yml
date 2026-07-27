@@ -44,7 +44,8 @@ services:
       ETCD_QUOTA_BACKEND_BYTES: "4294967296"
     volumes:
       - etcd-data:/etcd
-    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379
+    # advertise 使用容器内可解析地址，避免 Milvus 无法连接
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379
 
   minio:
     image: minio/minio:RELEASE.2023-03-20T20-16-18Z
@@ -56,8 +57,50 @@ services:
       - minio-data:/minio_data
     command: minio server /minio_data
 
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: legal-backend
+    environment:
+      # 让 Spring Boot 指向容器内的 MySQL/Redis/Milvus 服务名
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/legal_assistant?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: 123123
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      MILVUS_HOST: milvus
+      MILVUS_PORT: 19530
+      MILVUS_COLLECTION: legal_docs_local
+      MILVUS_DIMENSION: "384"
+      LEGAL_EMBEDDING_PROVIDER: local
+
+      # 模型 API Key：可先用占位值启动；实际使用前请替换成你的 Key
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-your-api-key}
+      FILE_UPLOAD_DIR: /app/uploads
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mysql
+      - redis
+      - milvus
+    volumes:
+      - backend-uploads:/app/uploads
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: legal-frontend
+    ports:
+      # 生产默认 3000→nginx:80；开发 compose 通过环境变量改为 3000→vite:3000
+      - "${FRONTEND_HOST_PORT:-3000}:${FRONTEND_CONTAINER_PORT:-80}"
+    depends_on:
+      - backend
+
 volumes:
   mysql-data:
   milvus-data:
   etcd-data:
   minio-data:
+  backend-uploads:

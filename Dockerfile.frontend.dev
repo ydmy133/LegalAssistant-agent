@@ -1,0 +1,8 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+EXPOSE 3000
+
+# 源码由 compose 挂载；首次启动安装依赖，Vite 热更新
+CMD ["sh", "-c", "if [ ! -d node_modules/vite ]; then npm install; fi && npm run dev -- --host 0.0.0.0 --port 3000"]
