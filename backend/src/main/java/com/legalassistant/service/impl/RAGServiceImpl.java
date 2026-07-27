@@ -1,6 +1,7 @@
 package com.legalassistant.service.impl;
 
 import com.legalassistant.mapper.DocumentMapper;
+import com.legalassistant.service.ModelService;
 import com.legalassistant.service.RAGService;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.DocumentParser;
@@ -14,6 +15,7 @@ import dev.langchain4j.store.embedding.EmbeddingSearchResult;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayInputStream;
@@ -24,16 +26,22 @@ import java.util.List;
 @RequiredArgsConstructor
 public class RAGServiceImpl implements RAGService {
 
-    private final EmbeddingModel embeddingModel;
+    private final EmbeddingModel defaultEmbeddingModel;
     private final EmbeddingStore<TextSegment> embeddingStore;
     private final DocumentMapper documentMapper;
+    private final ModelService modelService;
+
+    @Value("${legal.embedding.provider:local}")
+    private String embeddingProvider;
 
     private static final int MAX_SEGMENT_SIZE = 500;
     private static final int MAX_OVERLAP_SIZE = 50;
 
     @Override
-    public void ingestDocument(Long documentId, byte[] fileBytes, String fileName) {
+    public void ingestDocument(Long documentId, byte[] fileBytes, String fileName, Long modelConfigId) {
         log.info("Ingesting document {}: {}", documentId, fileName);
+
+        EmbeddingModel embeddingModel = resolveEmbeddingModel(modelConfigId);
 
         DocumentParser parser = new ApacheTikaDocumentParser();
         Document document = parser.parse(new ByteArrayInputStream(fileBytes));
@@ -63,13 +71,15 @@ public class RAGServiceImpl implements RAGService {
     }
 
     @Override
-    public List<TextSegment> search(String query) {
+    public List<TextSegment> search(String query, Long modelConfigId) {
+        EmbeddingModel embeddingModel = resolveEmbeddingModel(modelConfigId);
+
         Embedding queryEmbedding = embeddingModel.embed(query).content();
         EmbeddingSearchResult<TextSegment> result = embeddingStore.search(
                 EmbeddingSearchRequest.builder()
                         .queryEmbedding(queryEmbedding)
                         .maxResults(5)
-                        .minScore(0.7)
+                        .minScore(0.5)
                         .build()
         );
         return result.matches().stream()
@@ -83,5 +93,15 @@ public class RAGServiceImpl implements RAGService {
         String filterExpr = "document_id == \"" + documentId + "\"";
         embeddingStore.removeAll(java.util.List.of(filterExpr));
         log.info("Deleted embeddings for document {}", documentId);
+    }
+
+    private EmbeddingModel resolveEmbeddingModel(Long modelConfigId) {
+        if ("local".equalsIgnoreCase(embeddingProvider)) {
+            return defaultEmbeddingModel;
+        }
+        if (modelConfigId != null) {
+            return modelService.buildEmbeddingModel(modelConfigId);
+        }
+        return defaultEmbeddingModel;
     }
 }
