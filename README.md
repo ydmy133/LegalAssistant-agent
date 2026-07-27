@@ -10,7 +10,8 @@
 | AI 框架 | LangChain4j Spring Boot Starter | 1.0.0-beta5 |
 | LLM | OpenAI (兼容 API) | gpt-4o-mini / text-embedding-3-small |
 | 多模型支持 | DeepSeek / 智谱 / Moonshot / 通义千问 / SiliconFlow | 用户自行配置 API Key |
-| 向量数据库 | Milvus (standalone) | 2.4+ |
+| 向量数据库 | Milvus (standalone) 或 LightRAG | Milvus 2.4+ / LightRAG latest |
+| Embedding（LightRAG） | Ollama **bge-m3** | 1024 维 |
 | 关系数据库 | MySQL | 8.0 |
 | 缓存 & 会话 | Redis | 7.x |
 | ORM | MyBatis-Plus | 3.5.7 |
@@ -240,11 +241,52 @@ docker-compose up -d --build backend frontend
 ### 1. 启动基础设施
 
 ```bash
-# 启动 MySQL + Redis + Milvus
+# 启动 MySQL + Redis + Milvus（默认 RAG provider=milvus）
 docker-compose up -d
 
 # 初始化数据库表
 mysql -h 127.0.0.1 -u root -p123123 < backend/sql/init.sql
+```
+
+### 可选：启用 LightRAG（图谱 + 向量混合检索）
+
+LightRAG 使用 Ollama `bge-m3` 做 Embedding，DeepSeek OpenAI 兼容 API 做实体/关系抽取。与 Milvus 可并存，通过 `LEGAL_RAG_PROVIDER` 切换。
+
+```bash
+# 1) 复制环境模板并填写 DeepSeek Key（勿提交 .env）
+cp deploy/lightrag/env.example deploy/lightrag/.env
+# 编辑 deploy/lightrag/.env：填入 LLM_BINDING_API_KEY
+# 或在 shell 中导出：
+export DEEPSEEK_API_KEY="sk-..."
+export LIGHTRAG_API_KEY="change-me-lightrag-api-key"
+
+# 2) 启动 Ollama + 拉取 bge-m3 + LightRAG（首次拉取模型可能需数分钟）
+docker-compose up -d ollama ollama-init lightrag
+
+# 3) 健康检查
+curl -s http://127.0.0.1:9621/health
+curl -s http://127.0.0.1:11434/api/tags | grep bge-m3
+
+# 4) 后端切换到 LightRAG
+export LEGAL_RAG_PROVIDER=lightrag
+export LIGHTRAG_BASE_URL=http://localhost:9621
+export LIGHTRAG_API_KEY=change-me-lightrag-api-key
+# 若用 Docker backend：
+# LEGAL_RAG_PROVIDER=lightrag docker-compose up -d --build backend
+```
+
+说明：
+
+- `legal.rag.provider=milvus`（默认）→ 本地 AllMiniLM + Milvus
+- `legal.rag.provider=lightrag` → LightRAG `POST /query/data`（`mode=hybrid`），检索结果交给对话 Agent 生成回答
+- 首次对 6 份预置文档建索引会调用 LLM 抽取实体/关系，耗时可能数分钟；启动后看日志中 `LightRAG preset sync` / `track` 进度
+- 基准测试脚本：`./scripts/bench-q-labor-001.sh`（问题 `Q-LABOR-001`）
+
+回退 Milvus 基线：
+
+```bash
+export LEGAL_RAG_PROVIDER=milvus
+# 或 docker-compose 环境变量 LEGAL_RAG_PROVIDER=milvus
 ```
 
 ### 2. 启动后端
