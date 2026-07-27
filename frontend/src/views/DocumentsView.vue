@@ -20,7 +20,12 @@
     </div>
 
     <el-table :data="documents" stripe style="width: 100%" v-loading="loading">
-      <el-table-column prop="fileName" label="文件名" min-width="200" />
+      <el-table-column prop="fileName" label="文件名" min-width="200">
+        <template #default="{ row }">
+          <span>{{ row.fileName }}</span>
+          <el-tag v-if="row.isPreset === 1" size="small" type="info" style="margin-left: 8px">法律库</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column prop="fileType" label="类型" width="80">
         <template #default="{ row }">
           <el-tag size="small">{{ row.fileType.toUpperCase() }}</el-tag>
@@ -34,8 +39,8 @@
       <el-table-column prop="chunkCount" label="分块数" width="80" />
       <el-table-column label="状态" width="100">
         <template #default="{ row }">
-          <el-tag :type="statusType(row.status)" size="small">
-            {{ statusText(row.status) }}
+          <el-tag :type="statusType(row.status, row)" size="small">
+            {{ statusText(row.status, row) }}
           </el-tag>
         </template>
       </el-table-column>
@@ -46,9 +51,16 @@
       </el-table-column>
       <el-table-column label="操作" width="80">
         <template #default="{ row }">
-          <el-button text type="danger" size="small" @click="handleDelete(row.id)">
+          <el-button
+            v-if="row.isPreset !== 1"
+            text
+            type="danger"
+            size="small"
+            @click="handleDelete(row.id)"
+          >
             删除
           </el-button>
+          <span v-else class="preset-hint">系统文档</span>
         </template>
       </el-table-column>
     </el-table>
@@ -124,8 +136,14 @@ const formatSize = (bytes) => {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
-const statusText = (s) => ({ 0: '处理中', 1: '已处理', '-1': '失败' }[s] || '未知')
-const statusType = (s) => ({ 0: 'warning', 1: 'success', '-1': 'danger' }[s] || 'info')
+const statusText = (s, row) => {
+  if (row?.isPreset === 1 && s === -1) return '待向量化'
+  return { 0: '处理中', 1: '已处理', '-1': '失败' }[s] || '未知'
+}
+const statusType = (s, row) => {
+  if (row?.isPreset === 1 && s === -1) return 'warning'
+  return { 0: 'warning', 1: 'success', '-1': 'danger' }[s] || 'info'
+}
 
 onMounted(loadDocuments)
 </script>
@@ -161,5 +179,9 @@ onMounted(loadDocuments)
   display: flex;
   justify-content: center;
   margin-top: 20px;
+}
+.preset-hint {
+  font-size: 12px;
+  color: #909399;
 }
 </style>
