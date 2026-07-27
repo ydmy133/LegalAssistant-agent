@@ -16,6 +16,7 @@ import dev.langchain4j.store.embedding.EmbeddingStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayInputStream;
@@ -24,6 +25,7 @@ import java.util.List;
 @Slf4j
 @Service
 @RequiredArgsConstructor
+@ConditionalOnProperty(name = "legal.rag.provider", havingValue = "milvus", matchIfMissing = true)
 public class RAGServiceImpl implements RAGService {
 
     private final EmbeddingModel defaultEmbeddingModel;

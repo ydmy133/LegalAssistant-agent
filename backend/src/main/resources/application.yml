@@ -86,3 +86,12 @@ legal:
     enabled: true
   embedding:
     provider: ${LEGAL_EMBEDDING_PROVIDER:local}
+  rag:
+    provider: ${LEGAL_RAG_PROVIDER:milvus}   # milvus | lightrag
+  lightrag:
+    base-url: ${LIGHTRAG_BASE_URL:http://localhost:9621}
+    api-key: ${LIGHTRAG_API_KEY:}
+    query-mode: hybrid
+    ingest-poll-interval-ms: 2000
+    ingest-poll-timeout-seconds: 600
+    file-source-prefix: legal-doc

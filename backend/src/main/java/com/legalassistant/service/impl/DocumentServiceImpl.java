@@ -43,6 +43,9 @@ public class DocumentServiceImpl implements DocumentService {
     @Value("${legal.embedding.provider:local}")
     private String embeddingProvider;
 
+    @Value("${legal.rag.provider:milvus}")
+    private String ragProvider;
+
     @Override
     public Document upload(MultipartFile file, Long userId) {
         if (file.isEmpty()) {
@@ -168,7 +171,9 @@ public class DocumentServiceImpl implements DocumentService {
 
     private int retryFailedPresetDocuments(Long ownerId) {
         Long modelConfigId = resolveEmbeddingModelConfigId(ownerId);
-        if (modelConfigId == null && !"local".equalsIgnoreCase(embeddingProvider)) {
+        if (modelConfigId == null
+                && !"local".equalsIgnoreCase(embeddingProvider)
+                && !"lightrag".equalsIgnoreCase(ragProvider)) {
             return 0;
         }
         List<Document> failed = documentMapper.selectList(
@@ -205,6 +210,10 @@ public class DocumentServiceImpl implements DocumentService {
     public Long resolveEmbeddingModelConfigId(Long userId) {
         if ("local".equalsIgnoreCase(embeddingProvider)) {
             return null;
+        }
+        if ("lightrag".equalsIgnoreCase(ragProvider)) {
+            // Sentinel so LegalTools attempts ragService.search (LightRAG ignores model config).
+            return 0L;
         }
         return resolveOpenAiEmbeddingModelConfigId(userId);
     }
