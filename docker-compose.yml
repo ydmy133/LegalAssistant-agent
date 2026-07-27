@@ -57,6 +57,55 @@ services:
       - minio-data:/minio_data
     command: minio server /minio_data
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: legal-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: legal-ollama-init
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Waiting for Ollama..."
+        until ollama list >/dev/null 2>&1; do sleep 2; done
+        echo "Pulling bge-m3..."
+        ollama pull bge-m3
+        echo "bge-m3 ready"
+    restart: "no"
+
+  lightrag:
+    image: ghcr.io/hkuds/lightrag:latest
+    container_name: legal-lightrag
+    ports:
+      - "9621:9621"
+    env_file:
+      - deploy/lightrag/.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 9621
+      EMBEDDING_BINDING_HOST: http://ollama:11434
+      EMBEDDING_MODEL: bge-m3
+      EMBEDDING_DIM: 1024
+      LLM_BINDING: openai
+      LLM_BINDING_HOST: https://api.deepseek.com/v1
+      LLM_MODEL: deepseek-chat
+      LLM_BINDING_API_KEY: ${DEEPSEEK_API_KEY:-}
+      LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY:-change-me-lightrag-api-key}
+    volumes:
+      - lightrag-data:/app/data
+    depends_on:
+      ollama-init:
+        condition: service_completed_successfully
+
   backend:
     build:
       context: .
@@ -74,9 +123,13 @@ services:
       MILVUS_COLLECTION: legal_docs_local
       MILVUS_DIMENSION: "384"
       LEGAL_EMBEDDING_PROVIDER: local
+      LEGAL_RAG_PROVIDER: ${LEGAL_RAG_PROVIDER:-milvus}
+      LIGHTRAG_BASE_URL: http://lightrag:9621
+      LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY:-change-me-lightrag-api-key}
 
       # 模型 API Key：可先用占位值启动；实际使用前请替换成你的 Key
       OPENAI_API_KEY: ${OPENAI_API_KEY:-your-api-key}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       FILE_UPLOAD_DIR: /app/uploads
     ports:
       - "8080:8080"
@@ -103,4 +156,6 @@ volumes:
   milvus-data:
   etcd-data:
   minio-data:
+  ollama-data:
+  lightrag-data:
   backend-uploads:
