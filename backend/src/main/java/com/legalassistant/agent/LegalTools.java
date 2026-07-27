@@ -1,10 +1,12 @@
 package com.legalassistant.agent;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.legalassistant.common.UserContext;
 import com.legalassistant.entity.LegalCase;
 import com.legalassistant.entity.Message;
 import com.legalassistant.mapper.LegalCaseMapper;
 import com.legalassistant.mapper.MessageMapper;
+import com.legalassistant.service.DocumentService;
 import com.legalassistant.service.RAGService;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
@@ -22,6 +24,7 @@ import java.util.stream.Collectors;
 public class LegalTools {
 
     private final RAGService ragService;
+    private final DocumentService documentService;
     private final LegalCaseMapper caseMapper;
     private final MessageMapper messageMapper;
 
@@ -29,15 +32,21 @@ public class LegalTools {
     public String searchLegalKnowledge(
             @P("检索关键词或问题描述") String query) {
         log.info("Tool: searchLegalKnowledge called with query='{}'", query);
-        List<TextSegment> results = ragService.search(query);
-        if (results.isEmpty()) {
-            return "未在知识库中找到相关内容。";
+        Long userId = UserContext.getUserId();
+
+        try {
+            Long modelConfigId = documentService.resolveEmbeddingModelConfigId(userId);
+            if (modelConfigId != null) {
+                List<TextSegment> results = ragService.search(query, modelConfigId);
+                if (!results.isEmpty()) {
+                    return formatSegments(results);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Vector search failed, fallback to keyword search: {}", e.getMessage());
         }
-        return results.stream()
-                .map(seg -> String.format("[来源: %s] %s",
-                        seg.metadata().getString("file_name") != null ? seg.metadata().getString("file_name") : "未知",
-                        seg.text()))
-                .collect(Collectors.joining("\n\n"));
+
+        return documentService.searchPresetDocumentsByKeyword(query);
     }
 
     @Tool("搜索相关法律判例，按案由或关键词检索")
@@ -51,8 +60,24 @@ public class LegalTools {
                         .like(LegalCase::getSummary, keyword)
                         .or()
                         .like(LegalCase::getCaseType, keyword)
+                        .or()
+                        .like(LegalCase::getContent, keyword)
                         .last("LIMIT 5")
         );
+        if (cases.isEmpty() && keyword != null && keyword.length() > 2) {
+            String sub = keyword.length() > 4 ? keyword.substring(0, 4) : keyword.substring(0, 2);
+            cases = caseMapper.selectList(
+                    new LambdaQueryWrapper<LegalCase>()
+                            .like(LegalCase::getTitle, sub)
+                            .or()
+                            .like(LegalCase::getSummary, sub)
+                            .or()
+                            .like(LegalCase::getCaseType, sub)
+                            .or()
+                            .like(LegalCase::getContent, sub)
+                            .last("LIMIT 5")
+            );
+        }
         if (cases.isEmpty()) {
             return "未找到相关判例。";
         }
@@ -64,6 +89,14 @@ public class LegalTools {
                         c.getJudgmentDate() != null ? c.getJudgmentDate().toString() : "未知",
                         c.getSummary() != null ? c.getSummary() : "无"))
                 .collect(Collectors.joining("\n---\n"));
+    }
+
+    private String formatSegments(List<TextSegment> results) {
+        return results.stream()
+                .map(seg -> String.format("[来源: %s] %s",
+                        seg.metadata().getString("file_name") != null ? seg.metadata().getString("file_name") : "未知",
+                        seg.text()))
+                .collect(Collectors.joining("\n\n"));
     }
 
     @Tool("获取指定案件的详细信息")
