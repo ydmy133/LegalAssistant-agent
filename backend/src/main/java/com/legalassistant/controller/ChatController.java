@@ -40,10 +40,10 @@ public class ChatController {
         String sessionId = req.getSessionId() != null ? req.getSessionId() : UUID.randomUUID().toString();
         String content = req.getContent();
         if (content == null || content.isBlank()) {
-            return Flux.just("data: 消息内容不能为空\n\n");
+            return Flux.error(new IllegalArgumentException("消息内容不能为空"));
         }
-        return chatService.sendMessageStream(sessionId, content, req.getModelConfigId(), userId)
-                .map(chunk -> "data: " + chunk + "\n\n");
+        // 由 Spring 将每个字符串封装为 SSE data 事件，勿再手动加 data: 前缀
+        return chatService.sendMessageStream(sessionId, content, req.getModelConfigId(), userId);
     }
 
     @GetMapping("/sessions")

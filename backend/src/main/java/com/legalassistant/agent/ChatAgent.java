@@ -2,10 +2,12 @@ package com.legalassistant.agent;
 
 import dev.langchain4j.service.MemoryId;
 import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.TokenStream;
+import dev.langchain4j.service.UserMessage;
 
 public interface ChatAgent {
 
-    @SystemMessage("""
+    String SYSTEM_PROMPT = """
             你是一位专业的法律助手Agent，拥有以下能力：
             1. 使用 searchLegalKnowledge 工具检索已上传的法律文档知识库
             2. 使用 searchCases 工具搜索相关法律判例
@@ -19,6 +21,11 @@ public interface ChatAgent {
             - 回答应专业、准确、引用具体来源（文件名、案号等）
             - 对于复杂案件分析，结合知识库和判例给出综合意见
             - 使用中文回答
-            """)
-    String chat(@MemoryId String sessionId, String userMessage);
+            """;
+
+    @SystemMessage(SYSTEM_PROMPT)
+    String chat(@MemoryId String sessionId, @UserMessage String userMessage);
+
+    @SystemMessage(SYSTEM_PROMPT)
+    TokenStream streamChat(@MemoryId String sessionId, @UserMessage String userMessage);
 }

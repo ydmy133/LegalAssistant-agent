@@ -15,14 +15,16 @@ import com.legalassistant.service.ChatService;
 import com.legalassistant.service.ModelService;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.TokenStream;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.FluxSink;
 
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
@@ -46,13 +48,12 @@ public class ChatServiceImpl implements ChatService {
         Long configId = resolveModelConfigId(modelConfigId, userId);
         ChatModel chatModel = modelService.buildChatModel(configId);
 
-        MessageWindowChatMemory memory = memoryCache.computeIfAbsent(sessionId,
-                k -> MessageWindowChatMemory.withMaxMessages(20));
-
         ChatAgent agent = AiServices.builder(ChatAgent.class)
                 .chatModel(chatModel)
                 .tools(legalTools)
-                .chatMemory(memory)
+                .chatMemoryProvider(memoryId -> memoryCache.computeIfAbsent(
+                        String.valueOf(memoryId),
+                        k -> MessageWindowChatMemory.withMaxMessages(20)))
                 .build();
 
         String response = agent.chat(sessionId, content);
@@ -68,9 +69,54 @@ public class ChatServiceImpl implements ChatService {
 
     @Override
     public Flux<String> sendMessageStream(String sessionId, String content, Long modelConfigId, Long userId) {
-        // Fall back to blocking call for now; streaming model requires separate wiring
-        String response = sendMessage(sessionId, content, modelConfigId, userId);
-        return Flux.just(response);
+        Conversation conv = getOrCreateConversation(sessionId, userId);
+        saveMessage(conv.getId(), "user", content);
+
+        Long configId = resolveModelConfigId(modelConfigId, userId);
+        StreamingChatModel streamingChatModel = modelService.buildStreamingChatModel(configId);
+
+        ChatAgent agent = AiServices.builder(ChatAgent.class)
+                .streamingChatModel(streamingChatModel)
+                .tools(legalTools)
+                .chatMemoryProvider(memoryId -> memoryCache.computeIfAbsent(
+                        String.valueOf(memoryId),
+                        k -> MessageWindowChatMemory.withMaxMessages(20)))
+                .build();
+
+        return Flux.create(sink -> {
+            StringBuilder full = new StringBuilder();
+            TokenStream tokenStream = agent.streamChat(sessionId, content);
+            tokenStream
+                    .onPartialResponse(partial -> {
+                        if (partial != null && !partial.isEmpty()) {
+                            full.append(partial);
+                            sink.next(partial);
+                        }
+                    })
+                    .onCompleteResponse(response -> {
+                        String text = response != null && response.aiMessage() != null
+                                ? response.aiMessage().text()
+                                : null;
+                        if (text == null || text.isBlank()) {
+                            text = full.toString();
+                        }
+                        saveMessage(conv.getId(), "assistant", text);
+                        if ("新对话".equals(conv.getTitle())) {
+                            conv.setTitle(content.length() > 50 ? content.substring(0, 50) + "..." : content);
+                            conversationMapper.updateById(conv);
+                        }
+                        sink.next("[DONE]");
+                        sink.complete();
+                    })
+                    .onError(error -> {
+                        log.error("Streaming chat failed, sessionId={}", sessionId, error);
+                        if (full.length() > 0) {
+                            saveMessage(conv.getId(), "assistant", full.toString());
+                        }
+                        sink.error(error);
+                    })
+                    .start();
+        }, FluxSink.OverflowStrategy.BUFFER);
     }
 
     @Override
