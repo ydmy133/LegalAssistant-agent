@@ -31,13 +31,24 @@
           <el-avatar v-if="msg.role === 'user'" :icon="UserFilled" :size="36" />
           <el-avatar v-else :size="36" style="background: #409eff">AI</el-avatar>
         </div>
-        <div class="message-content" v-html="formatContent(msg.content)"></div>
+        <div class="message-body">
+          <div class="message-content" v-html="formatContent(msg.content)"></div>
+          <div v-if="msg.role === 'assistant' && msg.durationMs" class="message-meta">
+            耗时 {{ formatDuration(msg.durationMs) }}
+          </div>
+        </div>
       </div>
       <div v-if="streaming" class="message assistant">
         <div class="message-avatar">
           <el-avatar :size="36" style="background: #409eff">AI</el-avatar>
         </div>
-        <div class="message-content" v-html="formatContent(streamContent)"></div>
+        <div class="message-body">
+          <div class="message-content" v-html="formatContent(streamContent)"></div>
+          <div class="message-meta streaming-meta">
+            <span v-if="!streamContent" class="thinking">思考中</span>
+            <span>{{ formatDuration(elapsedMs) }}</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -88,13 +99,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick, watch } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { UserFilled, Upload, UploadFilled } from '@element-plus/icons-vue'
-import { sendMessage, getMessages, newSession } from '../api/chat'
+import { sendMessageStream, getMessages, newSession } from '../api/chat'
 import { getModelConfigs } from '../api/modelConfig'
 import { uploadDocument } from '../api/document'
+import { formatMessage, formatDuration } from '../utils/formatMessage'
 
 const route = useRoute()
 const router = useRouter()
@@ -108,7 +120,34 @@ const input = ref('')
 const sending = ref(false)
 const streaming = ref(false)
 const streamContent = ref('')
+const elapsedMs = ref(0)
 const messagesRef = ref(null)
+
+let streamTimer = null
+let streamStartAt = 0
+
+const startElapsedTimer = () => {
+  streamStartAt = Date.now()
+  elapsedMs.value = 0
+  stopElapsedTimer()
+  streamTimer = window.setInterval(() => {
+    elapsedMs.value = Date.now() - streamStartAt
+  }, 100)
+}
+
+const stopElapsedTimer = () => {
+  if (streamTimer != null) {
+    clearInterval(streamTimer)
+    streamTimer = null
+  }
+}
+
+const finishElapsed = () => {
+  const duration = Date.now() - streamStartAt
+  stopElapsedTimer()
+  elapsedMs.value = duration
+  return duration
+}
 
 // Upload
 const uploadVisible = ref(false)
@@ -152,19 +191,49 @@ const handleSend = async () => {
   messages.value.push({ role: 'user', content })
   input.value = ''
   sending.value = true
+  streaming.value = true
+  streamContent.value = ''
+  startElapsedTimer()
   await nextTick()
   scrollBottom()
 
+  let durationMs = 0
   try {
-    const res = await sendMessage({
-      sessionId,
-      content,
-      modelConfigId: selectedModelId.value,
+    const full = await sendMessageStream(
+      {
+        sessionId,
+        content,
+        modelConfigId: selectedModelId.value,
+      },
+      {
+        onChunk: (_chunk, accumulated) => {
+          streamContent.value = accumulated
+          scrollBottom()
+        },
+      }
+    )
+    durationMs = finishElapsed()
+    messages.value.push({
+      role: 'assistant',
+      content: full || streamContent.value || '（无回复）',
+      durationMs,
     })
-    messages.value.push({ role: 'assistant', content: res.data.response })
   } catch {
-    messages.value.push({ role: 'assistant', content: '抱歉，请求失败，请稍后重试。' })
+    durationMs = finishElapsed()
+    if (streamContent.value) {
+      messages.value.push({ role: 'assistant', content: streamContent.value, durationMs })
+    } else {
+      messages.value.push({
+        role: 'assistant',
+        content: '抱歉，请求失败，请稍后重试。',
+        durationMs,
+      })
+    }
   } finally {
+    stopElapsedTimer()
+    streaming.value = false
+    streamContent.value = ''
+    elapsedMs.value = 0
     sending.value = false
     await nextTick()
     scrollBottom()
@@ -191,10 +260,7 @@ const handleUpload = async () => {
   }
 }
 
-const formatContent = (text) => {
-  if (!text) return ''
-  return text.replace(/\n/g, '<br>')
-}
+const formatContent = formatMessage
 
 const scrollBottom = () => {
   nextTick(() => {
@@ -216,6 +282,10 @@ onMounted(() => {
   if (route.params.sessionId) {
     loadMessages(route.params.sessionId)
   }
+})
+
+onUnmounted(() => {
+  stopElapsedTimer()
 })
 </script>
 
@@ -269,11 +339,38 @@ onMounted(() => {
 .message.assistant {
   margin-right: auto;
 }
+.message-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+}
+.message-meta {
+  font-size: 12px;
+  color: #909399;
+  padding: 0 4px;
+  line-height: 1.4;
+}
+.message.user .message-meta {
+  text-align: right;
+}
+.streaming-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.thinking {
+  color: #409eff;
+}
 .message-content {
   padding: 12px 16px;
   border-radius: 8px;
   font-size: 14px;
   line-height: 1.7;
+  word-break: break-word;
+}
+.message-content :deep(strong) {
+  font-weight: 600;
 }
 .message.user .message-content {
   background: #409eff;
