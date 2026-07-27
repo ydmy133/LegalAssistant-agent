@@ -7,6 +7,19 @@ CREATE DATABASE IF NOT EXISTS legal_assistant DEFAULT CHARACTER SET utf8mb4 COLL
 
 USE legal_assistant;
 
+-- 用户表
+CREATE TABLE `user` (
+    `id`          BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    `username`    VARCHAR(64)  NOT NULL COMMENT '用户名',
+    `password`    VARCHAR(256) NOT NULL COMMENT '密码(BCrypt加密)',
+    `email`       VARCHAR(128) DEFAULT NULL COMMENT '邮箱',
+    `phone`       VARCHAR(32)  DEFAULT NULL COMMENT '手机号',
+    `create_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户表';
+
 -- 法律文档表 (上传的法律文档元数据)
 CREATE TABLE `document` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
@@ -17,11 +30,15 @@ CREATE TABLE `document` (
     `file_size`   BIGINT       NOT NULL DEFAULT 0 COMMENT '文件大小(字节)',
     `chunk_count` INT          NOT NULL DEFAULT 0 COMMENT '分块数量',
     `status`      TINYINT      NOT NULL DEFAULT 1 COMMENT '1=已处理, 0=处理中, -1=处理失败',
+    `is_preset`   TINYINT      NOT NULL DEFAULT 0 COMMENT '1=系统预置法律文档(全员可见)',
+    `user_id`     BIGINT       NOT NULL COMMENT '所属用户ID',
     `create_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `update_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
     KEY `idx_status` (`status`),
-    KEY `idx_create_time` (`create_time`)
+    KEY `idx_user_id` (`user_id`),
+    KEY `idx_create_time` (`create_time`),
+    CONSTRAINT `fk_document_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='法律文档表';
 
 -- 会话表 (对话会话)
@@ -50,19 +67,6 @@ CREATE TABLE `message` (
     KEY `idx_conversation_id` (`conversation_id`),
     KEY `idx_create_time` (`create_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='消息表';
-
--- 用户表
-CREATE TABLE `user` (
-    `id`          BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
-    `username`    VARCHAR(64)  NOT NULL COMMENT '用户名',
-    `password`    VARCHAR(256) NOT NULL COMMENT '密码(BCrypt加密)',
-    `email`       VARCHAR(128) DEFAULT NULL COMMENT '邮箱',
-    `phone`       VARCHAR(32)  DEFAULT NULL COMMENT '手机号',
-    `create_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    `update_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    PRIMARY KEY (`id`),
-    UNIQUE KEY `uk_username` (`username`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户表';
 
 -- 用户模型配置表
 CREATE TABLE `user_model_config` (

@@ -17,6 +17,8 @@ public class Document {
     private Long fileSize;
     private Integer chunkCount;
     private Integer status;
+    /** 1=系统预置法律文档，所有用户在文档管理中可见 */
+    private Integer isPreset;
     private Long userId;
 
     @TableField(fill = FieldFill.INSERT)
