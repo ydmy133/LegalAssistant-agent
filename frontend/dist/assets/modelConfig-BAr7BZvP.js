@@ -1,0 +1,1 @@
+import{r as o}from"./request-CaBU2iJW.js";function r(){return o.get("/model-configs")}function f(e){return o.post("/model-configs",e)}function i(e,n){return o.put(`/model-configs/${e}`,n)}function d(e){return o.delete(`/model-configs/${e}`)}export{f as c,d,r as g,i as u};
