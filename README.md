@@ -206,11 +206,42 @@ Milvus 集合 `legal_docs` 存储文档向量（维度 1536），携带元数据
 
 ## 快速开始
 
+### 方式 A：Docker 开发模式（改代码免重建镜像）
+
+挂载源码，前端 Vite 热更新，后端 `spring-boot:run` + DevTools 自动重启：
+
+```bash
+# 一键启动（MySQL/Redis/Milvus + 开发态前后端）
+./scripts/dev-up.sh
+
+# 或手动
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+
+# 停止
+./scripts/dev-down.sh
+```
+
+| 改动类型 | 是否需要重建镜像 |
+|----------|----------------|
+| 改 `.vue` / `.js` | 否，浏览器自动刷新 |
+| 改 Java 源码 | 否，DevTools 约数秒内重启 |
+| 改 `pom.xml` / `package.json` | 重启对应容器即可（`docker-compose ... restart backend`） |
+| 改 `Dockerfile.*` / compose 本身 | 需要 `up --build` |
+
+切回生产镜像部署：
+
+```bash
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml down
+docker-compose up -d --build backend frontend
+```
+
+### 方式 B：本地直接跑（最快）
+
 ### 1. 启动基础设施
 
 ```bash
 # 启动 MySQL + Redis + Milvus
-docker compose up -d
+docker-compose up -d
 
 # 初始化数据库表
 mysql -h 127.0.0.1 -u root -p123123 < backend/sql/init.sql
