@@ -11,7 +11,7 @@ All commands run from `backend/`:
 ./mvnw compile
 ./mvnw package
 
-# Run the app (MySQL, Redis, Milvus must be running)
+# Run the app (MySQL, Redis, Ollama, LightRAG must be running)
 export OPENAI_API_KEY="sk-..."
 ./mvnw spring-boot:run
 
@@ -21,8 +21,9 @@ export OPENAI_API_KEY="sk-..."
 
 **Infrastructure** (from repo root):
 ```bash
-docker compose up -d                          # Start MySQL + Redis + Milvus
-mysql -u root -p123123 < backend/sql/init.sql # Initialize database tables
+cp deploy/lightrag/env.example deploy/lightrag/.env   # fill LLM_BINDING_API_KEY
+docker compose up -d                                    # MySQL + Redis + Ollama + LightRAG
+mysql -u root -p123123 < backend/sql/init.sql         # Initialize database tables
 ```
 
 ## Architecture
@@ -39,30 +40,27 @@ OpenAI ChatModel (gpt-4o-mini with function calling)
     │  LLM decides WHEN to call tools
     ▼
 @Tool methods in LegalTools (auto-discovered by Spring)
-    ├── searchLegalKnowledge() → RAGService → Milvus vector search
-    ├── searchCases()          → MySQL legal_case LIKE query
-    ├── getCaseDetail()        → MySQL legal_case by ID
+    ├── searchLegalKnowledge() → RAGService (LightRAGServiceImpl) → LightRAG /query/data
+    ├── searchCases() → MySQL legal_case LIKE query
+    ├── getCaseDetail() → MySQL legal_case by ID
     └── getConversationHistory() → MySQL message history
 ```
 
 **Critical**: `@AiService` discovers `@Tool`-annotated methods on any Spring `@Component`/`@Service` bean automatically. The `@SystemMessage` on the interface tells the LLM what tools are available and when to use them. The `@MemoryId` parameter triggers LangChain4j to maintain a per-session `ChatMemory` (in-memory by default).
 
-### RAG Pipeline
+### RAG Pipeline (LightRAG)
 
 ```
 Document upload (MultipartFile)
-    → ApacheTikaDocumentParser extracts text from PDF/DOCX/TXT
-    → DocumentSplitters.recursive(500 chars, 50 overlap) chunks
-    → OpenAiEmbeddingModel (text-embedding-3-small, dim=1536) embeds
-    → MilvusEmbeddingStore.addAll() persists to Milvus collection "legal_docs"
+ → persist file + MySQL document row
+ → LightRAGClient.uploadDocument → LightRAG indexes (entities/relations/chunks)
+ → LightRAGSyncSeeder ensures preset docs are indexed on startup
 
 Query (via @Tool searchLegalKnowledge)
-    → embeddingModel.embed(query)
-    → embeddingStore.search(EmbeddingSearchRequest maxResults=5, minScore=0.7)
-    → returns List<TextSegment> formatted for the LLM
+ → LightRAGClient.queryData(mode=hybrid)
+ → format entities / relationships / chunks as TextSegment list for the LLM
+ → keyword fallback on preset markdown if LightRAG fails
 ```
-
-Each `TextSegment` carries metadata (`document_id`, `file_name`) set during ingestion. The `getString("file_name")` accessor is used because `Metadata` exposes typed accessors (`getString`, `getInteger`, etc.) not generic `get()`.
 
 ### Conversation Memory
 
@@ -75,15 +73,13 @@ Each `TextSegment` carries metadata (`document_id`, `file_name`) set during inge
 
 This project uses **1.0.0-beta5** (the `langchain4j-spring-boot-starter` version), not a GA release. Key API differences from newer docs/guides:
 - `Metadata` uses typed accessors (`getString()`, `getInteger()`) — no generic `get()` or `getOrDefault()`
-- `EmbeddingStore.removeAll()` accepts `Collection<String>` or `Filter`, not a raw String expression
-- `DocumentSplitters.recursive(int chars, int overlap)` uses character-based splitting (no `Tokenizer` parameter in this version)
 - `TextSegment.text()` returns `String`, `TextSegment.metadata()` returns `Metadata`
 
 ### Configuration Wiring
 
-- `MilvusConfig` manually creates `MilvusEmbeddingStore` bean (host/port/collection/dimension from `application.yml`)
-- `LangChain4jConfig` creates `ContentRetriever` bean — this is for the "always-on RAG" pattern (injecting context before every request). The current agent uses **tool-based RAG** instead (agent decides when to call `searchLegalKnowledge`), so this bean is present but not currently wired into the agent.
-- LangChain4j auto-configures `OpenAiChatModel`, `OpenAiStreamingChatModel`, `OpenAiEmbeddingModel` beans from `application.yml` properties — no manual config needed
+- `LightRAGProperties` + `LightRAGClient` call LightRAG HTTP API (`LIGHTRAG_BASE_URL`, `LIGHTRAG_API_KEY`)
+- `LightRAGServiceImpl` is the sole `RAGService` implementation
+- LangChain4j auto-configures `OpenAiChatModel`, `OpenAiStreamingChatModel` beans from `application.yml` — no manual config needed for chat
 - `MyBatisPlusConfig` implements `MetaObjectHandler` for `createTime`/`updateTime` auto-fill on entity insert/update
 - `WebConfig` enables CORS for all origins (dev mode)
 

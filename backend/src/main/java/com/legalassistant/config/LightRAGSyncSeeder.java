@@ -7,7 +7,6 @@ import com.legalassistant.service.RAGService;
 import com.legalassistant.service.impl.LightRAGServiceImpl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationListener;
 import org.springframework.core.annotation.Order;
@@ -18,13 +17,12 @@ import java.nio.file.Paths;
 import java.util.List;
 
 /**
- * 当 RAG provider=lightrag 时，将 MySQL 中已存在的预置文档同步到 LightRAG（Milvus 索引不会自动迁移）。
+ * 将 MySQL 中已存在的预置文档同步到 LightRAG（避免仅文档表有记录、图谱未建索引）。
  */
 @Slf4j
 @Component
 @Order(100)
 @RequiredArgsConstructor
-@ConditionalOnProperty(name = "legal.rag.provider", havingValue = "lightrag")
 public class LightRAGSyncSeeder implements ApplicationListener<ApplicationReadyEvent> {
 
     private final DocumentMapper documentMapper;

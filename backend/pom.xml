@@ -70,24 +70,10 @@
             <version>${langchain4j.version}</version>
         </dependency>
 
-        <!-- LangChain4j Milvus -->
-        <dependency>
-            <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j-milvus</artifactId>
-            <version>${langchain4j.version}</version>
-        </dependency>
-
         <!-- LangChain4j Document Parser (Apache Tika) -->
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-document-parser-apache-tika</artifactId>
-            <version>${langchain4j.version}</version>
-        </dependency>
-
-        <!-- 本地 Embedding 模型（ONNX，打包在依赖中，无需 OpenAI API） -->
-        <dependency>
-            <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j-embeddings-all-minilm-l6-v2-q</artifactId>
             <version>${langchain4j.version}</version>
         </dependency>
 

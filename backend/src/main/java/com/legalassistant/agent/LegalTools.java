@@ -1,7 +1,6 @@
 package com.legalassistant.agent;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.legalassistant.common.UserContext;
 import com.legalassistant.entity.LegalCase;
 import com.legalassistant.entity.Message;
 import com.legalassistant.mapper.LegalCaseMapper;
@@ -32,18 +31,14 @@ public class LegalTools {
     public String searchLegalKnowledge(
             @P("检索关键词或问题描述") String query) {
         log.info("Tool: searchLegalKnowledge called with query='{}'", query);
-        Long userId = UserContext.getUserId();
 
         try {
-            Long modelConfigId = documentService.resolveEmbeddingModelConfigId(userId);
-            if (modelConfigId != null) {
-                List<TextSegment> results = ragService.search(query, modelConfigId);
-                if (!results.isEmpty()) {
-                    return formatSegments(results);
-                }
+            List<TextSegment> results = ragService.search(query, null);
+            if (!results.isEmpty()) {
+                return formatSegments(results);
             }
         } catch (Exception e) {
-            log.warn("Vector search failed, fallback to keyword search: {}", e.getMessage());
+            log.warn("LightRAG search failed, fallback to keyword search: {}", e.getMessage());
         }
 
         return documentService.searchPresetDocumentsByKeyword(query);

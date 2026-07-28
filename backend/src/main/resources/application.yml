@@ -68,26 +68,15 @@ langchain4j:
       log-requests: true
       log-responses: true
 
-# Milvus Configuration
-milvus:
-  host: ${MILVUS_HOST:localhost}
-  port: ${MILVUS_PORT:19530}
-  # 本地 AllMiniLM 384 维；OpenAI text-embedding-3-small 为 1536 维
-  collection: ${MILVUS_COLLECTION:legal_docs_local}
-  dimension: ${MILVUS_DIMENSION:384}
-
 # File storage
 file:
   upload-dir: ./uploads
 
 # 启动时自动导入预置法律文档（classpath:legal-documents/）
+# RAG 统一使用 LightRAG（hybrid query/data）
 legal:
   seed-documents:
     enabled: true
-  embedding:
-    provider: ${LEGAL_EMBEDDING_PROVIDER:local}
-  rag:
-    provider: ${LEGAL_RAG_PROVIDER:milvus}   # milvus | lightrag
   lightrag:
     base-url: ${LIGHTRAG_BASE_URL:http://localhost:9621}
     api-key: ${LIGHTRAG_API_KEY:}

@@ -8,7 +8,6 @@ import com.legalassistant.config.LightRAGProperties;
 import com.legalassistant.exception.BusinessException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -29,7 +28,6 @@ import java.util.Map;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-@ConditionalOnProperty(name = "legal.rag.provider", havingValue = "lightrag")
 public class LightRAGClient {
 
     private final RestTemplate restTemplate;

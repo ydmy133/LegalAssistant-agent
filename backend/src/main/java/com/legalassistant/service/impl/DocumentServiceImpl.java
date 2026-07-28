@@ -4,11 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.legalassistant.entity.Document;
 import com.legalassistant.entity.User;
-import com.legalassistant.entity.UserModelConfig;
 import com.legalassistant.exception.BusinessException;
 import com.legalassistant.mapper.DocumentMapper;
 import com.legalassistant.mapper.UserMapper;
-import com.legalassistant.mapper.UserModelConfigMapper;
 import com.legalassistant.service.DocumentService;
 import com.legalassistant.service.RAGService;
 import lombok.RequiredArgsConstructor;
@@ -34,17 +32,10 @@ public class DocumentServiceImpl implements DocumentService {
 
     private final DocumentMapper documentMapper;
     private final UserMapper userMapper;
-    private final UserModelConfigMapper modelConfigMapper;
     private final RAGService ragService;
 
     @Value("${file.upload-dir:./uploads}")
     private String uploadDir;
-
-    @Value("${legal.embedding.provider:local}")
-    private String embeddingProvider;
-
-    @Value("${legal.rag.provider:milvus}")
-    private String ragProvider;
 
     @Override
     public Document upload(MultipartFile file, Long userId) {
@@ -78,8 +69,7 @@ public class DocumentServiceImpl implements DocumentService {
             documentMapper.insert(doc);
 
             try {
-                Long modelConfigId = resolveEmbeddingModelConfigId(userId);
-                ragService.ingestDocument(doc.getId(), file.getBytes(), originalName, modelConfigId);
+                ragService.ingestDocument(doc.getId(), file.getBytes(), originalName, null);
                 doc.setStatus(1);
                 documentMapper.updateById(doc);
             } catch (Exception e) {
@@ -170,12 +160,6 @@ public class DocumentServiceImpl implements DocumentService {
     }
 
     private int retryFailedPresetDocuments(Long ownerId) {
-        Long modelConfigId = resolveEmbeddingModelConfigId(ownerId);
-        if (modelConfigId == null
-                && !"local".equalsIgnoreCase(embeddingProvider)
-                && !"lightrag".equalsIgnoreCase(ragProvider)) {
-            return 0;
-        }
         List<Document> failed = documentMapper.selectList(
                 new LambdaQueryWrapper<Document>()
                         .eq(Document::getIsPreset, 1)
@@ -189,7 +173,7 @@ public class DocumentServiceImpl implements DocumentService {
                 if (doc.getChunkCount() != null && doc.getChunkCount() > 0) {
                     ragService.deleteDocumentEmbeddings(doc.getId());
                 }
-                ragService.ingestDocument(doc.getId(), bytes, doc.getFileName(), modelConfigId);
+                ragService.ingestDocument(doc.getId(), bytes, doc.getFileName(), null);
                 Document updated = documentMapper.selectById(doc.getId());
                 if (updated != null) {
                     updated.setStatus(1);
@@ -208,46 +192,8 @@ public class DocumentServiceImpl implements DocumentService {
 
     @Override
     public Long resolveEmbeddingModelConfigId(Long userId) {
-        if ("local".equalsIgnoreCase(embeddingProvider)) {
-            return null;
-        }
-        if ("lightrag".equalsIgnoreCase(ragProvider)) {
-            // Sentinel so LegalTools attempts ragService.search (LightRAG ignores model config).
-            return 0L;
-        }
-        return resolveOpenAiEmbeddingModelConfigId(userId);
-    }
-
-    private Long resolveOpenAiEmbeddingModelConfigId(Long userId) {
-        // 向量检索优先使用 OpenAI（DeepSeek 等厂商通常不提供 Embedding 接口）
-        UserModelConfig openAi = modelConfigMapper.selectOne(
-                new LambdaQueryWrapper<UserModelConfig>()
-                        .eq(UserModelConfig::getUserId, userId)
-                        .like(UserModelConfig::getProviderName, "OpenAI")
-                        .last("LIMIT 1"));
-        if (openAi != null) {
-            return openAi.getId();
-        }
-        UserModelConfig defaultConfig = modelConfigMapper.selectOne(
-                new LambdaQueryWrapper<UserModelConfig>()
-                        .eq(UserModelConfig::getUserId, userId)
-                        .eq(UserModelConfig::getIsDefault, 1)
-                        .last("LIMIT 1"));
-        if (defaultConfig != null) {
-            return defaultConfig.getId();
-        }
-        UserModelConfig any = modelConfigMapper.selectOne(
-                new LambdaQueryWrapper<UserModelConfig>()
-                        .eq(UserModelConfig::getUserId, userId)
-                        .last("LIMIT 1"));
-        if (any != null) {
-            return any.getId();
-        }
-        UserModelConfig globalOpenAi = modelConfigMapper.selectOne(
-                new LambdaQueryWrapper<UserModelConfig>()
-                        .like(UserModelConfig::getProviderName, "OpenAI")
-                        .last("LIMIT 1"));
-        return globalOpenAi != null ? globalOpenAi.getId() : null;
+        // LightRAG 自行管理 Embedding，对话侧不再选择向量模型配置
+        return null;
     }
 
     @Override
@@ -341,8 +287,7 @@ public class DocumentServiceImpl implements DocumentService {
         documentMapper.insert(doc);
 
         try {
-            Long modelConfigId = resolveEmbeddingModelConfigId(userId);
-            ragService.ingestDocument(doc.getId(), bytes, originalName, modelConfigId);
+            ragService.ingestDocument(doc.getId(), bytes, originalName, null);
             doc.setStatus(1);
             documentMapper.updateById(doc);
         } catch (Exception e) {

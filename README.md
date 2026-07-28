@@ -1,6 +1,6 @@
 # LegalAssistant-agent
 
-基于 **LangChain4j + OpenAI + Milvus** 的智能法律助手 Agent 平台，覆盖 RAG 检索、Agent 工具调用、多模型支持、对话记忆等 AI 应用核心模式。
+基于 **LangChain4j + LightRAG + OpenAI 兼容 API** 的智能法律助手 Agent 平台，覆盖图谱增强 RAG、Agent 工具调用、多模型支持、对话记忆等核心能力。
 
 ## 技术栈
 
@@ -8,10 +8,10 @@
 |------|------|------|
 | 语言 & 框架 | Java + Spring Boot | JDK 17 / Spring Boot 3.2.7 |
 | AI 框架 | LangChain4j Spring Boot Starter | 1.0.0-beta5 |
-| LLM | OpenAI (兼容 API) | gpt-4o-mini / text-embedding-3-small |
+| LLM | OpenAI 兼容 API（对话） | DeepSeek / gpt-4o-mini 等 |
 | 多模型支持 | DeepSeek / 智谱 / Moonshot / 通义千问 / SiliconFlow | 用户自行配置 API Key |
-| 向量数据库 | Milvus (standalone) 或 LightRAG | Milvus 2.4+ / LightRAG latest |
-| Embedding（LightRAG） | Ollama **bge-m3** | 1024 维 |
+| RAG | **LightRAG**（hybrid `query/data`） | ghcr.io/hkuds/lightrag |
+| Embedding | Ollama **bge-m3** | 1024 维 |
 | 关系数据库 | MySQL | 8.0 |
 | 缓存 & 会话 | Redis | 7.x |
 | ORM | MyBatis-Plus | 3.5.7 |
@@ -23,8 +23,8 @@
 
 - **用户认证** — 注册/登录，JWT 鉴权，BCrypt 密码加密，对话历史按用户隔离
 - **多模型支持** — 用户自行配置 API Key，支持 OpenAI / DeepSeek / 智谱 / Moonshot / 通义千问 / SiliconFlow 及任意 OpenAI 兼容接口，提问时自由切换模型
-- **法律文档上传** — 支持 PDF/DOCX/TXT/MD，自动解析、分块、向量化存入 Milvus
-- **RAG 检索增强** — 基于用户问题检索知识库，将相关文档片段注入 Agent 上下文
+- **法律文档上传** — 支持 PDF/DOCX/TXT/MD，入库后由 LightRAG 建索引（实体/关系/向量）
+- **RAG 检索增强** — LightRAG hybrid 检索，结果注入 Agent 工具上下文
 - **法律问答** — 自然语言法律咨询，Agent 自主检索知识库后作答
 - **案件分析** — 录入案件信息，Agent 检索知识库 + 判例库后给出综合分析意见
 - **Agent 工具调用** — 4 个 `@Tool` 方法，Agent 根据用户意图自主决策调用哪个工具
@@ -45,11 +45,14 @@
 │   │   │   ├── JwtUtils.java             # JWT 生成/验证/解析
 │   │   │   └── UserContext.java          # ThreadLocal 持有当前用户 ID
 │   │   ├── config/
-│   │   │   ├── LangChain4jConfig.java    # ContentRetriever Bean
-│   │   │   ├── MilvusConfig.java         # MilvusEmbeddingStore Bean
+│   │   │   ├── LangChain4jConfig.java    # ChatMemoryProvider
+│   │   │   ├── LightRAGProperties.java   # LightRAG HTTP 配置
+│   │   │   ├── LightRAGSyncSeeder.java   # 预置文档同步到 LightRAG
 │   │   │   ├── MyBatisPlusConfig.java    # 自动填充 createTime/updateTime
 │   │   │   ├── SecurityConfig.java       # BCryptPasswordEncoder Bean
 │   │   │   └── WebConfig.java            # CORS + JWT 拦截器
+│   │   ├── client/
+│   │   │   └── LightRAGClient.java       # LightRAG REST 客户端
 │   │   ├── controller/
 │   │   │   ├── AgentController.java      # 统一 Agent 对话入口 (静态模型)
 │   │   │   ├── AuthController.java       # 注册 / 登录 / 当前用户
@@ -98,7 +101,7 @@
 │           ├── DocumentsView.vue          # 文档管理页
 │           └── SettingsView.vue          # 模型配置页
 │
-└── docker-compose.yml                    # MySQL + Redis + Milvus
+└── docker-compose.yml                    # MySQL + Redis + Ollama + LightRAG
 ```
 
 ## 核心设计
@@ -143,7 +146,7 @@
 文档上传 → Apache Tika 解析文本
        → DocumentSplitters.recursive(500, 50) 分块
        → OpenAI text-embedding-3-small 向量化
-       → MilvusEmbeddingStore 持久化
+       → LightRAG 入库建图谱/向量索引
 
 用户提问 → embeddingModel.embed(query)
        → embeddingStore.search(embedding, maxResults=5, minScore=0.7)
@@ -156,7 +159,7 @@ Agent 使用 LangChain4j 的 Function Calling 机制，4 个工具方法由 Spri
 
 | 工具方法 | 触发场景 | 数据来源 |
 |----------|----------|----------|
-| `searchLegalKnowledge` | 法律知识问答 | Milvus 向量检索 |
+| `searchLegalKnowledge` | 法律知识问答 | LightRAG hybrid 检索 |
 | `searchCases` | 判例/先例搜索 | MySQL legal_case 表 |
 | `getCaseDetail` | 查看具体案件详情 | MySQL legal_case 表 |
 | `getConversationHistory` | 需要历史上下文 | MySQL message 表 |
@@ -186,7 +189,7 @@ Agent 使用 LangChain4j 的 Function Calling 机制，4 个工具方法由 Spri
                                     │
      ChatController → ModelService (动态构建 ChatModel)
                     → AiServices (程序化 Agent + LegalTools)
-                    → RAGService (Milvus 向量检索)
+                    → RAGService (LightRAG hybrid)
                     → MySQL (消息持久化)
 ```
 
@@ -203,7 +206,7 @@ Agent 使用 LangChain4j 的 Function Calling 机制，4 个工具方法由 Spri
 | `message` | 聊天消息（角色 user/assistant、内容、时间） |
 | `legal_case` | 法律案件（案号、法院、类型、当事人、摘要、判决日期） |
 
-Milvus 集合 `legal_docs` 存储文档向量（维度 1536），携带元数据 `document_id`、`file_name`。
+文档经 LightRAG 索引；对话侧通过 `LightRAGClient` 调用 `query/data` 取 entities/relationships/chunks。
 
 ## 快速开始
 
@@ -212,7 +215,7 @@ Milvus 集合 `legal_docs` 存储文档向量（维度 1536），携带元数据
 挂载源码，前端 Vite 热更新，后端 `spring-boot:run` + DevTools 自动重启：
 
 ```bash
-# 一键启动（MySQL/Redis/Milvus + 开发态前后端）
+# 一键启动（MySQL/Redis/Ollama/LightRAG + 开发态前后端）
 ./scripts/dev-up.sh
 
 # 或手动
@@ -240,54 +243,31 @@ docker-compose up -d --build backend frontend
 
 ### 1. 启动基础设施
 
-```bash
-# 启动 MySQL + Redis + Milvus（默认 RAG provider=milvus）
-docker-compose up -d
-
-# 初始化数据库表
-mysql -h 127.0.0.1 -u root -p123123 < backend/sql/init.sql
-```
-
-### 可选：启用 LightRAG（图谱 + 向量混合检索）
-
-LightRAG 使用 Ollama `bge-m3` 做 Embedding，DeepSeek OpenAI 兼容 API 做实体/关系抽取。与 Milvus 可并存，通过 `LEGAL_RAG_PROVIDER` 切换。
+RAG 固定使用 **LightRAG**（Ollama `bge-m3` Embedding + hybrid 检索）。
 
 ```bash
-# 1) 复制环境模板并填写 DeepSeek Key（勿提交 .env）
+# 复制 LightRAG 环境模板并填写 DeepSeek Key（勿提交 .env）
 cp deploy/lightrag/env.example deploy/lightrag/.env
 # 编辑 deploy/lightrag/.env：填入 LLM_BINDING_API_KEY
-# 或在 shell 中导出：
 export DEEPSEEK_API_KEY="sk-..."
 export LIGHTRAG_API_KEY="change-me-lightrag-api-key"
 
-# 2) 启动 Ollama + 拉取 bge-m3 + LightRAG（首次拉取模型可能需数分钟）
-docker-compose up -d ollama ollama-init lightrag
+# 启动 MySQL / Redis / Ollama / LightRAG（首次拉取 bge-m3 可能需数分钟）
+docker-compose up -d
 
-# 3) 健康检查
+# 初始化数据库表（仅首次）
+mysql -h 127.0.0.1 -u root -p123123 < backend/sql/init.sql
+
+# 健康检查
 curl -s http://127.0.0.1:9621/health
 curl -s http://127.0.0.1:11434/api/tags | grep bge-m3
-
-# 4) 后端切换到 LightRAG
-export LEGAL_RAG_PROVIDER=lightrag
-export LIGHTRAG_BASE_URL=http://localhost:9621
-export LIGHTRAG_API_KEY=change-me-lightrag-api-key
-# 若用 Docker backend：
-# LEGAL_RAG_PROVIDER=lightrag docker-compose up -d --build backend
 ```
 
 说明：
 
-- `legal.rag.provider=milvus`（默认）→ 本地 AllMiniLM + Milvus
-- `legal.rag.provider=lightrag` → LightRAG `POST /query/data`（`mode=hybrid`），检索结果交给对话 Agent 生成回答
-- 首次对 6 份预置文档建索引会调用 LLM 抽取实体/关系，耗时可能数分钟；启动后看日志中 `LightRAG preset sync` / `track` 进度
-- 基准测试脚本：`./scripts/bench-q-labor-001.sh`（问题 `Q-LABOR-001`）
-
-回退 Milvus 基线：
-
-```bash
-export LEGAL_RAG_PROVIDER=milvus
-# 或 docker-compose 环境变量 LEGAL_RAG_PROVIDER=milvus
-```
+- 检索：`POST /query/data`，`mode=hybrid`，结果交给对话 Agent 生成回答
+- 首次对预置文档建索引会调用 LLM 抽取实体/关系，耗时可能数分钟
+- 基准测试：`./scripts/bench-q-labor-001.sh http://127.0.0.1:8080 1 3`
 
 ### 2. 启动后端
 
