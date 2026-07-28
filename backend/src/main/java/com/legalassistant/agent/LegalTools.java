@@ -38,7 +38,7 @@ public class LegalTools {
                 return formatSegments(results);
             }
         } catch (Exception e) {
-            log.warn("LightRAG search failed, fallback to keyword search: {}", e.getMessage());
+            log.warn("RAGFlow search failed, fallback to keyword search: {}", e.getMessage());
         }
 
         return documentService.searchPresetDocumentsByKeyword(query);

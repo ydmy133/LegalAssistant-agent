@@ -6,13 +6,15 @@ import org.springframework.stereotype.Component;
 
 @Data
 @Component
-@ConfigurationProperties(prefix = "legal.lightrag")
-public class LightRAGProperties {
+@ConfigurationProperties(prefix = "legal.ragflow")
+public class RAGFlowProperties {
 
-    private String baseUrl = "http://localhost:9621";
+    private String baseUrl = "http://localhost:9380";
     private String apiKey = "";
-    private String queryMode = "hybrid";
+    private String datasetId = "";
+    private int pageSize = 5;
+    private double similarityThreshold = 0.2;
     private long ingestPollIntervalMs = 2000;
     private long ingestPollTimeoutSeconds = 600;
-    private String fileSourcePrefix = "legal-doc";
+    private String fileNamePrefix = "legal-doc";
 }

@@ -192,7 +192,7 @@ public class DocumentServiceImpl implements DocumentService {
 
     @Override
     public Long resolveEmbeddingModelConfigId(Long userId) {
-        // LightRAG 自行管理 Embedding，对话侧不再选择向量模型配置
+        // RAGFlow 自行管理 Embedding，对话侧不再选择向量模型配置
         return null;
     }
 

@@ -73,14 +73,16 @@ file:
   upload-dir: ./uploads
 
 # 启动时自动导入预置法律文档（classpath:legal-documents/）
-# RAG 统一使用 LightRAG（hybrid query/data）
+# RAG 统一使用 RAGFlow（POST /api/v1/retrieval，仅取 chunks）
 legal:
   seed-documents:
     enabled: true
-  lightrag:
-    base-url: ${LIGHTRAG_BASE_URL:http://localhost:9621}
-    api-key: ${LIGHTRAG_API_KEY:}
-    query-mode: hybrid
+  ragflow:
+    base-url: ${RAGFLOW_BASE_URL:http://localhost:9380}
+    api-key: ${RAGFLOW_API_KEY:}
+    dataset-id: ${RAGFLOW_DATASET_ID:}
+    page-size: 5
+    similarity-threshold: 0.2
     ingest-poll-interval-ms: 2000
     ingest-poll-timeout-seconds: 600
-    file-source-prefix: legal-doc
+    file-name-prefix: legal-doc
