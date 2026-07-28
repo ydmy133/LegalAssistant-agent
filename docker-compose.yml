@@ -44,43 +44,24 @@ services:
         echo "bge-m3 ready"
     restart: "no"
 
-  lightrag:
-    image: ghcr.io/hkuds/lightrag:latest
-    container_name: legal-lightrag
-    ports:
-      - "9621:9621"
-    env_file:
-      - deploy/lightrag/.env
-    environment:
-      HOST: 0.0.0.0
-      PORT: 9621
-      EMBEDDING_BINDING_HOST: http://ollama:11434
-      EMBEDDING_MODEL: bge-m3
-      EMBEDDING_DIM: 1024
-      LLM_BINDING: openai
-      LLM_BINDING_HOST: https://api.deepseek.com/v1
-      LLM_MODEL: deepseek-chat
-      LLM_BINDING_API_KEY: ${DEEPSEEK_API_KEY:-}
-      LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY:-change-me-lightrag-api-key}
-    volumes:
-      - lightrag-data:/app/data
-    depends_on:
-      ollama-init:
-        condition: service_completed_successfully
-
   backend:
     build:
       context: .
       dockerfile: Dockerfile.backend
     container_name: legal-backend
+    env_file:
+      - .env.ragflow
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/legal_assistant?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8&allowPublicKeyRetrieval=true
       SPRING_DATASOURCE_USERNAME: root
       SPRING_DATASOURCE_PASSWORD: 123123
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
-      LIGHTRAG_BASE_URL: http://lightrag:9621
-      LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY:-change-me-lightrag-api-key}
+      RAGFLOW_BASE_URL: ${RAGFLOW_BASE_URL:-http://host.docker.internal:9380}
+      RAGFLOW_API_KEY: ${RAGFLOW_API_KEY:-}
+      RAGFLOW_DATASET_ID: ${RAGFLOW_DATASET_ID:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-your-api-key}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       FILE_UPLOAD_DIR: /app/uploads
@@ -89,7 +70,7 @@ services:
     depends_on:
       - mysql
       - redis
-      - lightrag
+      - ollama-init
     volumes:
       - backend-uploads:/app/uploads
 
@@ -106,5 +87,4 @@ services:
 volumes:
   mysql-data:
   ollama-data:
-  lightrag-data:
   backend-uploads:
