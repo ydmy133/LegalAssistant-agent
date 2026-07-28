@@ -11,8 +11,10 @@ All commands run from `backend/`:
 ./mvnw compile
 ./mvnw package
 
-# Run the app (MySQL, Redis, Ollama, LightRAG must be running)
+# Run the app (MySQL, Redis, Ollama, RAGFlow must be running)
 export OPENAI_API_KEY="sk-..."
+export RAGFLOW_API_KEY="..."
+export RAGFLOW_DATASET_ID="..."
 ./mvnw spring-boot:run
 
 # Run tests
@@ -21,8 +23,10 @@ export OPENAI_API_KEY="sk-..."
 
 **Infrastructure** (from repo root):
 ```bash
-cp deploy/lightrag/env.example deploy/lightrag/.env   # fill LLM_BINDING_API_KEY
-docker compose up -d                                    # MySQL + Redis + Ollama + LightRAG
+docker compose up -d                                    # MySQL + Redis + Ollama
+cd deploy/ragflow && cp .env.example .env && docker compose --env-file .env up -d   # RAGFlow v0.26.4
+# Bootstrap API key + dataset (needs DEEPSEEK_API_KEY for chat model provider):
+DEEPSEEK_API_KEY=sk-... ./scripts/ragflow-bootstrap.sh
 mysql -u root -p123123 < backend/sql/init.sql         # Initialize database tables
 ```
 
@@ -40,7 +44,7 @@ OpenAI ChatModel (gpt-4o-mini with function calling)
     │  LLM decides WHEN to call tools
     ▼
 @Tool methods in LegalTools (auto-discovered by Spring)
-    ├── searchLegalKnowledge() → RAGService (LightRAGServiceImpl) → LightRAG /query/data
+    ├── searchLegalKnowledge() → RAGService (RAGFlowServiceImpl) → RAGFlow /api/v1/retrieval
     ├── searchCases() → MySQL legal_case LIKE query
     ├── getCaseDetail() → MySQL legal_case by ID
     └── getConversationHistory() → MySQL message history
@@ -48,19 +52,21 @@ OpenAI ChatModel (gpt-4o-mini with function calling)
 
 **Critical**: `@AiService` discovers `@Tool`-annotated methods on any Spring `@Component`/`@Service` bean automatically. The `@SystemMessage` on the interface tells the LLM what tools are available and when to use them. The `@MemoryId` parameter triggers LangChain4j to maintain a per-session `ChatMemory` (in-memory by default).
 
-### RAG Pipeline (LightRAG)
+### RAG Pipeline (RAGFlow)
 
 ```
 Document upload (MultipartFile)
  → persist file + MySQL document row
- → LightRAGClient.uploadDocument → LightRAG indexes (entities/relations/chunks)
- → LightRAGSyncSeeder ensures preset docs are indexed on startup
+ → RAGFlowClient.uploadDocument → parse chunks → poll until done
+ → RAGFlowSyncSeeder ensures preset docs are indexed on startup
 
 Query (via @Tool searchLegalKnowledge)
- → LightRAGClient.queryData(mode=hybrid)
- → format entities / relationships / chunks as TextSegment list for the LLM
- → keyword fallback on preset markdown if LightRAG fails
+ → RAGFlowClient.retrieve() → POST /api/v1/retrieval (chunks only)
+ → format chunks as TextSegment list for the LLM
+ → keyword fallback on preset markdown if RAGFlow fails
 ```
+
+Document display name convention: `legal-doc:{mysqlDocumentId}:{fileName}`.
 
 ### Conversation Memory
 
@@ -77,8 +83,9 @@ This project uses **1.0.0-beta5** (the `langchain4j-spring-boot-starter` version
 
 ### Configuration Wiring
 
-- `LightRAGProperties` + `LightRAGClient` call LightRAG HTTP API (`LIGHTRAG_BASE_URL`, `LIGHTRAG_API_KEY`)
-- `LightRAGServiceImpl` is the sole `RAGService` implementation
+- `RAGFlowProperties` + `RAGFlowClient` call RAGFlow HTTP API (`RAGFLOW_BASE_URL`, `RAGFLOW_API_KEY`, `RAGFLOW_DATASET_ID`)
+- `RAGFlowServiceImpl` is the sole `RAGService` implementation
+- RAGFlow runs as an **independent** compose stack under `deploy/ragflow/` (host ports Web 9385 / API 9380 / MySQL 5455 / Redis 6380 / ES 1200)
 - LangChain4j auto-configures `OpenAiChatModel`, `OpenAiStreamingChatModel` beans from `application.yml` — no manual config needed for chat
 - `MyBatisPlusConfig` implements `MetaObjectHandler` for `createTime`/`updateTime` auto-fill on entity insert/update
 - `WebConfig` enables CORS for all origins (dev mode)

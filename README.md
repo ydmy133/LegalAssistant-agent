@@ -1,6 +1,6 @@
 # LegalAssistant-agent
 
-基于 **LangChain4j + LightRAG + OpenAI 兼容 API** 的智能法律助手 Agent 平台，覆盖图谱增强 RAG、Agent 工具调用、多模型支持、对话记忆等核心能力。
+基于 **LangChain4j + RAGFlow + OpenAI 兼容 API** 的智能法律助手 Agent 平台，覆盖文档 RAG、Agent 工具调用、多模型支持、对话记忆等核心能力。
 
 ## 技术栈
 
@@ -10,8 +10,8 @@
 | AI 框架 | LangChain4j Spring Boot Starter | 1.0.0-beta5 |
 | LLM | OpenAI 兼容 API（对话） | DeepSeek / gpt-4o-mini 等 |
 | 多模型支持 | DeepSeek / 智谱 / Moonshot / 通义千问 / SiliconFlow | 用户自行配置 API Key |
-| RAG | **LightRAG**（hybrid `query/data`） | ghcr.io/hkuds/lightrag |
-| Embedding | Ollama **bge-m3** | 1024 维 |
+| RAG | **RAGFlow**（`POST /api/v1/retrieval`） | infiniflow/ragflow:v0.26.4 |
+| Embedding | Ollama **bge-m3**（供 RAGFlow） | 1024 维 |
 | 关系数据库 | MySQL | 8.0 |
 | 缓存 & 会话 | Redis | 7.x |
 | ORM | MyBatis-Plus | 3.5.7 |
@@ -23,8 +23,8 @@
 
 - **用户认证** — 注册/登录，JWT 鉴权，BCrypt 密码加密，对话历史按用户隔离
 - **多模型支持** — 用户自行配置 API Key，支持 OpenAI / DeepSeek / 智谱 / Moonshot / 通义千问 / SiliconFlow 及任意 OpenAI 兼容接口，提问时自由切换模型
-- **法律文档上传** — 支持 PDF/DOCX/TXT/MD，入库后由 LightRAG 建索引（实体/关系/向量）
-- **RAG 检索增强** — LightRAG hybrid 检索，结果注入 Agent 工具上下文
+- **法律文档上传** — 支持 PDF/DOCX/TXT/MD，入库后由 RAGFlow 解析建索引
+- **RAG 检索增强** — RAGFlow retrieval 取 chunks，结果注入 Agent 工具上下文
 - **法律问答** — 自然语言法律咨询，Agent 自主检索知识库后作答
 - **案件分析** — 录入案件信息，Agent 检索知识库 + 判例库后给出综合分析意见
 - **Agent 工具调用** — 4 个 `@Tool` 方法，Agent 根据用户意图自主决策调用哪个工具
@@ -46,13 +46,13 @@
 │   │   │   └── UserContext.java          # ThreadLocal 持有当前用户 ID
 │   │   ├── config/
 │   │   │   ├── LangChain4jConfig.java    # ChatMemoryProvider
-│   │   │   ├── LightRAGProperties.java   # LightRAG HTTP 配置
-│   │   │   ├── LightRAGSyncSeeder.java   # 预置文档同步到 LightRAG
+│   │   │   ├── RAGFlowProperties.java    # RAGFlow HTTP 配置
+│   │   │   ├── RAGFlowSyncSeeder.java    # 预置文档同步到 RAGFlow
 │   │   │   ├── MyBatisPlusConfig.java    # 自动填充 createTime/updateTime
 │   │   │   ├── SecurityConfig.java       # BCryptPasswordEncoder Bean
 │   │   │   └── WebConfig.java            # CORS + JWT 拦截器
 │   │   ├── client/
-│   │   │   └── LightRAGClient.java       # LightRAG REST 客户端
+│   │   │   └── RAGFlowClient.java        # RAGFlow REST 客户端
 │   │   ├── controller/
 │   │   │   ├── AgentController.java      # 统一 Agent 对话入口 (静态模型)
 │   │   │   ├── AuthController.java       # 注册 / 登录 / 当前用户
@@ -101,7 +101,8 @@
 │           ├── DocumentsView.vue          # 文档管理页
 │           └── SettingsView.vue          # 模型配置页
 │
-└── docker-compose.yml                    # MySQL + Redis + Ollama + LightRAG
+├── deploy/ragflow/                       # RAGFlow 独立栈（端口重映射）
+└── docker-compose.yml                    # MySQL + Redis + Ollama（+ backend/frontend）
 ```
 
 ## 核心设计
@@ -143,15 +144,15 @@
 ### RAG 管道
 
 ```
-文档上传 → Apache Tika 解析文本
-       → DocumentSplitters.recursive(500, 50) 分块
-       → OpenAI text-embedding-3-small 向量化
-       → LightRAG 入库建图谱/向量索引
+文档上传 → 持久化文件 + MySQL document 行
+       → RAGFlow 上传文档 → 触发 parse → 轮询至完成
 
-用户提问 → embeddingModel.embed(query)
-       → embeddingStore.search(embedding, maxResults=5, minScore=0.7)
-       → 将 top-K 文本片段注入 Agent 对话上下文
+用户提问 → RAGFlow POST /api/v1/retrieval（仅取 chunks）
+       → 将 top-K 文本片段注入 Agent 工具上下文
+       → 对话 Agent（DeepSeek 等）生成最终回答
 ```
+
+文档显示名约定：`legal-doc:{mysqlDocumentId}:{fileName}`。
 
 ### Agent 工具调用
 
@@ -159,7 +160,7 @@ Agent 使用 LangChain4j 的 Function Calling 机制，4 个工具方法由 Spri
 
 | 工具方法 | 触发场景 | 数据来源 |
 |----------|----------|----------|
-| `searchLegalKnowledge` | 法律知识问答 | LightRAG hybrid 检索 |
+| `searchLegalKnowledge` | 法律知识问答 | RAGFlow `/api/v1/retrieval` |
 | `searchCases` | 判例/先例搜索 | MySQL legal_case 表 |
 | `getCaseDetail` | 查看具体案件详情 | MySQL legal_case 表 |
 | `getConversationHistory` | 需要历史上下文 | MySQL message 表 |
@@ -189,7 +190,7 @@ Agent 使用 LangChain4j 的 Function Calling 机制，4 个工具方法由 Spri
                                     │
      ChatController → ModelService (动态构建 ChatModel)
                     → AiServices (程序化 Agent + LegalTools)
-                    → RAGService (LightRAG hybrid)
+                    → RAGService (RAGFlow retrieval)
                     → MySQL (消息持久化)
 ```
 
@@ -206,7 +207,7 @@ Agent 使用 LangChain4j 的 Function Calling 机制，4 个工具方法由 Spri
 | `message` | 聊天消息（角色 user/assistant、内容、时间） |
 | `legal_case` | 法律案件（案号、法院、类型、当事人、摘要、判决日期） |
 
-文档经 LightRAG 索引；对话侧通过 `LightRAGClient` 调用 `query/data` 取 entities/relationships/chunks。
+文档经 RAGFlow 索引；对话侧通过 `RAGFlowClient` 调用 `/api/v1/retrieval` 取 chunks。
 
 ## 快速开始
 
@@ -215,7 +216,7 @@ Agent 使用 LangChain4j 的 Function Calling 机制，4 个工具方法由 Spri
 挂载源码，前端 Vite 热更新，后端 `spring-boot:run` + DevTools 自动重启：
 
 ```bash
-# 一键启动（MySQL/Redis/Ollama/LightRAG + 开发态前后端）
+# 一键启动（MySQL/Redis/Ollama + 开发态前后端；RAGFlow 需另启）
 ./scripts/dev-up.sh
 
 # 或手动
@@ -243,31 +244,39 @@ docker-compose up -d --build backend frontend
 
 ### 1. 启动基础设施
 
-RAG 固定使用 **LightRAG**（Ollama `bge-m3` Embedding + hybrid 检索）。
+RAG 固定使用 **RAGFlow**（独立栈；Embedding 用主栈 Ollama `bge-m3`）。
 
 ```bash
-# 复制 LightRAG 环境模板并填写 DeepSeek Key（勿提交 .env）
-cp deploy/lightrag/env.example deploy/lightrag/.env
-# 编辑 deploy/lightrag/.env：填入 LLM_BINDING_API_KEY
-export DEEPSEEK_API_KEY="sk-..."
-export LIGHTRAG_API_KEY="change-me-lightrag-api-key"
+# 主栈：MySQL / Redis / Ollama（首次拉取 bge-m3 可能需数分钟）
+docker compose up -d mysql redis ollama ollama-init
 
-# 启动 MySQL / Redis / Ollama / LightRAG（首次拉取 bge-m3 可能需数分钟）
-docker-compose up -d
+# RAGFlow 独立栈（主机端口 Web 9385 / API 9380 / MySQL 5455 / Redis 6380 / ES 1200）
+cd deploy/ragflow
+cp .env.example .env
+sudo sysctl -w vm.max_map_count=262144
+docker compose --env-file .env up -d
+cd ../..
+
+# Bootstrap：注册管理员、API Key、DeepSeek + Ollama embedding、dataset
+export DEEPSEEK_API_KEY="sk-..."
+./scripts/ragflow-bootstrap.sh
+# 产物写入 deploy/ragflow/.env 与 .env.ragflow（RAGFLOW_API_KEY / RAGFLOW_DATASET_ID）
 
 # 初始化数据库表（仅首次）
 mysql -h 127.0.0.1 -u root -p123123 < backend/sql/init.sql
 
 # 健康检查
-curl -s http://127.0.0.1:9621/health
+curl -s http://127.0.0.1:9380/api/v1/system/healthz
 curl -s http://127.0.0.1:11434/api/tags | grep bge-m3
 ```
 
 说明：
 
-- 检索：`POST /query/data`，`mode=hybrid`，结果交给对话 Agent 生成回答
-- 首次对预置文档建索引会调用 LLM 抽取实体/关系，耗时可能数分钟
+- 检索：`POST /api/v1/retrieval`，仅取 chunks，由对话 Agent 生成回答
+- 首次对预置文档 parse 可能需数分钟；测试前须 parse 完成
+- **Bootstrap 阻塞**：缺少 `DEEPSEEK_API_KEY` 时聊天模型工厂无法配置；缺少 API Key / Dataset ID 时后端 RAG 同步会跳过
 - 基准测试：`./scripts/bench-q-labor-001.sh http://127.0.0.1:8080 1 3`
+- 详见 [`deploy/ragflow/README.md`](deploy/ragflow/README.md)
 
 ### 2. 启动后端
 
