@@ -38,7 +38,7 @@ public class ModelServiceImpl implements ModelService {
                 .modelName(config.getModelName())
                 .temperature(0.7)
                 .timeout(Duration.ofSeconds(120))
-                .maxTokens(2000)
+                .maxTokens(1200)
                 .logRequests(true)
                 .logResponses(true);
 
@@ -62,6 +62,7 @@ public class ModelServiceImpl implements ModelService {
                 .modelName(config.getModelName())
                 .temperature(0.7)
                 .timeout(Duration.ofSeconds(120))
+                .maxTokens(1200)
                 .logRequests(true)
                 .logResponses(true);
 
