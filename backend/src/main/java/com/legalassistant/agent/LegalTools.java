@@ -7,10 +7,17 @@ import com.legalassistant.entity.Message;
 import com.legalassistant.mapper.ConversationMapper;
 import com.legalassistant.mapper.LegalCaseMapper;
 import com.legalassistant.mapper.MessageMapper;
+import com.legalassistant.retrieval.LocalConfidenceEvaluator;
+import com.legalassistant.retrieval.LocalRetrievalOutcome;
+import com.legalassistant.retrieval.WebSearchHit;
 import com.legalassistant.service.DocumentService;
+import com.legalassistant.service.KnowledgeFusionService;
 import com.legalassistant.service.RAGService;
+import com.legalassistant.service.WebSearchService;
+import com.legalassistant.service.impl.SelfHostedWebSearchServiceImpl;
 import com.legalassistant.timing.ChatTiming;
 import com.legalassistant.timing.ChatTimingRegistry;
+import com.legalassistant.timing.ThoughtEventBus;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolMemoryId;
@@ -20,8 +27,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -30,79 +39,182 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class LegalTools {
 
+    private static final int SEGMENT_BODY_MAX = 600;
+    private static final int TOTAL_KNOWLEDGE_MAX = 4500;
+
     private final RAGService ragService;
     private final DocumentService documentService;
+    private final WebSearchService webSearchService;
+    private final LocalConfidenceEvaluator confidenceEvaluator;
+    private final KnowledgeFusionService knowledgeFusionService;
+    private final SessionToolGuard sessionToolGuard;
     private final LegalCaseMapper caseMapper;
     private final MessageMapper messageMapper;
     private final ConversationMapper conversationMapper;
 
-    @Tool("检索法律知识库（条文/要点），并自动附带最多2条相关判例摘要。常规问题只调用本工具一次即可；勿再调 searchCases/getCaseDetail，除非摘要明确不足。")
+    @Tool("检索法律知识库（条文/要点），并自动附带最多2条相关判例摘要。本地置信度不足时会自动联网补充。本轮最多调用1次；已附带判例时勿再调 searchCases。")
     public String searchLegalKnowledge(
             @ToolMemoryId String sessionId,
             @P("检索关键词或完整问题（优先一次写全）") String query) {
         log.info("Tool: searchLegalKnowledge called with query='{}'", query);
+        String blocked = sessionToolGuard.check(sessionId, "searchLegalKnowledge");
+        if (blocked != null) {
+            return blocked;
+        }
+        sessionToolGuard.record(sessionId, "searchLegalKnowledge");
         ChatTiming.Stage stage = beginTool(sessionId, "searchLegalKnowledge",
                 truncate(query, 80));
         try {
+            LocalRetrievalOutcome localOutcome = performLocalRetrieval(sessionId, query);
             String knowledge;
-            String source;
-            List<TextSegment> results = ragService.search(query, null);
-            if (!results.isEmpty()) {
-                knowledge = formatSegments(results);
-                source = "lightrag";
+            boolean webFallback = false;
+            int fusedSegments = localOutcome.hitCount();
+
+            if (confidenceEvaluator.needsWebFallback(localOutcome)) {
+                webFallback = true;
+                List<WebSearchHit> webHits = webSearchService.search(query);
+                knowledge = knowledgeFusionService.fuse(query, localOutcome, webHits);
+                fusedSegments = countFormattedSegments(knowledge);
+            } else if (localOutcome.getSegments() != null && !localOutcome.getSegments().isEmpty()) {
+                knowledge = formatSegments(localOutcome.getSegments());
             } else {
-                ChatTiming timing = resolveTiming(sessionId);
-                ChatTiming.Stage fallback = timing != null
-                        ? timing.startChildStage("keywordFallback", "预置文档关键词检索")
-                        : null;
-                try {
-                    knowledge = documentService.searchPresetDocumentsByKeyword(query);
-                    if (fallback != null) {
-                        fallback.end("chars=" + (knowledge != null ? knowledge.length() : 0));
-                    }
-                    source = "keywordFallback";
-                } catch (RuntimeException e) {
-                    if (fallback != null) {
-                        fallback.end("error=" + e.getMessage());
-                    }
-                    throw e;
-                }
+                knowledge = localOutcome.getRawText() != null ? localOutcome.getRawText() : "未找到相关法律知识。";
             }
+            knowledge = capText(knowledge, TOTAL_KNOWLEDGE_MAX);
 
             String casesBlock = formatRelatedCases(query, 2);
-            endTool(stage, "hits=" + (results != null ? results.size() : 0)
-                    + ", source=" + source
-                    + ", casesAttached=" + (casesBlock != null && !casesBlock.isBlank()));
-            if (casesBlock == null || casesBlock.isBlank()) {
-                return knowledge;
+            boolean casesAttached = casesBlock != null && !casesBlock.isBlank();
+            if (casesAttached) {
+                sessionToolGuard.markCasesAttached(sessionId);
             }
-            return knowledge + "\n\n---\n【相关判例摘要】（已附带，一般无需再调 searchCases/getCaseDetail）\n"
-                    + casesBlock;
+            endTool(stage, "hits=" + localOutcome.hitCount()
+                    + ", source=" + localOutcome.getSource().name().toLowerCase()
+                    + ", webFallback=" + webFallback
+                    + ", fusedSegments=" + fusedSegments
+                    + ", casesAttached=" + casesAttached);
+            return attachCasesBlock(knowledge, casesBlock);
         } catch (Exception e) {
             log.warn("LightRAG search failed, fallback to keyword search: {}", e.getMessage());
-            ChatTiming timing = resolveTiming(sessionId);
-            ChatTiming.Stage fallback = timing != null
-                    ? timing.startChildStage("keywordFallback", "LightRAG失败后关键词回退")
-                    : null;
-            try {
-                String text = documentService.searchPresetDocumentsByKeyword(query);
-                String casesBlock = formatRelatedCases(query, 2);
-                if (fallback != null) {
-                    fallback.end("chars=" + (text != null ? text.length() : 0));
-                }
-                endTool(stage, "error=" + e.getMessage() + ", source=keywordFallback");
-                if (casesBlock == null || casesBlock.isBlank()) {
-                    return text;
-                }
-                return text + "\n\n---\n【相关判例摘要】\n" + casesBlock;
-            } catch (RuntimeException fallbackError) {
-                if (fallback != null) {
-                    fallback.end("error=" + fallbackError.getMessage());
-                }
-                endTool(stage, "error=" + e.getMessage());
-                throw fallbackError;
+            LocalRetrievalOutcome fallbackOutcome = performKeywordFallback(sessionId, query, true, e.getMessage());
+            String knowledge;
+            boolean webFallback = false;
+            int fusedSegments = 0;
+
+            if (confidenceEvaluator.needsWebFallback(fallbackOutcome)) {
+                webFallback = true;
+                List<WebSearchHit> webHits = webSearchService.search(query);
+                knowledge = knowledgeFusionService.fuse(query, fallbackOutcome, webHits);
+                fusedSegments = countFormattedSegments(knowledge);
+            } else {
+                knowledge = fallbackOutcome.getRawText();
             }
+            knowledge = capText(knowledge, TOTAL_KNOWLEDGE_MAX);
+
+            String casesBlock = formatRelatedCases(query, 2);
+            if (casesBlock != null && !casesBlock.isBlank()) {
+                sessionToolGuard.markCasesAttached(sessionId);
+            }
+            endTool(stage, "error=" + e.getMessage()
+                    + ", source=keywordFallback"
+                    + ", webFallback=" + webFallback
+                    + ", fusedSegments=" + fusedSegments
+                    + ", casesAttached=" + (casesBlock != null && !casesBlock.isBlank()));
+            return attachCasesBlock(knowledge, casesBlock);
         }
+    }
+
+    @Tool("联网检索官方法律信息。仅当本地库明显不足或用户问最新/修订/某地规定时调用；本轮最多2次，禁止换词连搜。返回含 URL 的短摘要。")
+    public String searchWeb(
+            @ToolMemoryId String sessionId,
+            @P("检索关键词或完整问题") String query) {
+        log.info("Tool: searchWeb called with query='{}'", query);
+        String blocked = sessionToolGuard.check(sessionId, "searchWeb");
+        if (blocked != null) {
+            return blocked;
+        }
+        sessionToolGuard.record(sessionId, "searchWeb");
+        ChatTiming.Stage stage = beginTool(sessionId, "searchWeb", truncate(query, 80));
+        try {
+            if (!webSearchService.isAvailable()) {
+                endTool(stage, "disabled");
+                return "联网搜索未启用（请设置 WEB_SEARCH_ENABLED=true），无法检索。";
+            }
+            List<WebSearchHit> hits = webSearchService.search(query);
+            String reason = null;
+            if (webSearchService instanceof SelfHostedWebSearchServiceImpl selfHosted) {
+                reason = selfHosted.lastErrorReason();
+            }
+            String formatted = knowledgeFusionService.formatWebHits(hits, reason);
+            endTool(stage, "hits=" + hits.size()
+                    + (reason != null ? ", reason=" + truncate(reason, 60) : ""));
+            return formatted;
+        } catch (RuntimeException e) {
+            endTool(stage, "error=" + e.getMessage());
+            throw e;
+        }
+    }
+
+    private LocalRetrievalOutcome performLocalRetrieval(String sessionId, String query) {
+        try {
+            List<TextSegment> results = ragService.search(query, null);
+            if (!results.isEmpty()) {
+                return LocalRetrievalOutcome.builder()
+                        .segments(results)
+                        .rawText(formatSegments(results))
+                        .source(LocalRetrievalOutcome.LocalRetrievalSource.LIGHTRAG)
+                        .lightragFailed(false)
+                        .build();
+            }
+            return performKeywordFallback(sessionId, query, false, null);
+        } catch (RuntimeException e) {
+            return performKeywordFallback(sessionId, query, true, e.getMessage());
+        }
+    }
+
+    private LocalRetrievalOutcome performKeywordFallback(String sessionId,
+                                                         String query,
+                                                         boolean lightragFailed,
+                                                         String errorMessage) {
+        ChatTiming timing = resolveTiming(sessionId);
+        ChatTiming.Stage fallback = timing != null
+                ? timing.startChildStage("keywordFallback",
+                lightragFailed ? "LightRAG失败后关键词回退" : "预置文档关键词检索")
+                : null;
+        try {
+            String knowledge = documentService.searchPresetDocumentsByKeyword(query);
+            if (fallback != null) {
+                fallback.end("chars=" + (knowledge != null ? knowledge.length() : 0));
+            }
+            return LocalRetrievalOutcome.builder()
+                    .segments(List.of())
+                    .rawText(knowledge)
+                    .source(LocalRetrievalOutcome.LocalRetrievalSource.KEYWORD_FALLBACK)
+                    .errorMessage(errorMessage)
+                    .lightragFailed(lightragFailed)
+                    .build();
+        } catch (RuntimeException e) {
+            if (fallback != null) {
+                fallback.end("error=" + e.getMessage());
+            }
+            throw e;
+        }
+    }
+
+    private String attachCasesBlock(String knowledge, String casesBlock) {
+        if (casesBlock == null || casesBlock.isBlank()) {
+            return knowledge;
+        }
+        return knowledge + "\n\n---\n【相关判例摘要】（已附带，一般无需再调 searchCases/getCaseDetail）\n"
+                + casesBlock;
+    }
+
+    private static int countFormattedSegments(String knowledge) {
+        if (knowledge == null || knowledge.isBlank()) {
+            return 0;
+        }
+        return (int) knowledge.lines()
+                .filter(line -> line.startsWith("[来源:"))
+                .count();
     }
 
     /**
@@ -124,11 +236,16 @@ public class LegalTools {
                 .collect(Collectors.joining("\n---\n"));
     }
 
-    @Tool("按案由/关键词搜索相关判例。仅当 searchLegalKnowledge 未附带判例时使用；摘要已够用时不要再调 getCaseDetail。")
+    @Tool("按案由/关键词搜索相关判例。仅当 searchLegalKnowledge 未附带判例时使用；本轮最多1次。")
     public String searchCases(
             @ToolMemoryId String sessionId,
             @P("案由或短关键词（如：未签劳动合同、双倍工资）；可用空格分隔多个词") String keyword) {
         log.info("Tool: searchCases called with keyword='{}'", keyword);
+        String blocked = sessionToolGuard.check(sessionId, "searchCases");
+        if (blocked != null) {
+            return blocked;
+        }
+        sessionToolGuard.record(sessionId, "searchCases");
         ChatTiming.Stage stage = beginTool(sessionId, "searchCases", truncate(keyword, 80));
         try {
             List<LegalCase> cases = searchCasesByKeyword(keyword);
@@ -251,17 +368,38 @@ public class LegalTools {
 
     private String formatSegments(List<TextSegment> results) {
         return results.stream()
-                .map(seg -> String.format("[来源: %s] %s",
-                        seg.metadata().getString("file_name") != null ? seg.metadata().getString("file_name") : "未知",
-                        seg.text()))
+                .map(seg -> {
+                    String name = seg.metadata().getString("file_name") != null
+                            ? seg.metadata().getString("file_name") : "未知";
+                    String body = seg.text() != null ? seg.text() : "";
+                    if (body.length() > SEGMENT_BODY_MAX) {
+                        body = body.substring(0, SEGMENT_BODY_MAX) + "...";
+                    }
+                    return String.format("[来源: %s] %s", name, body);
+                })
                 .collect(Collectors.joining("\n\n"));
     }
 
-    @Tool("获取指定案件的详细信息。仅当 searchLegalKnowledge/searchCases 摘要不足以回答时，对已给出的案件 id 调用一次；常规问答禁止调用。")
+    private static String capText(String text, int max) {
+        if (text == null) {
+            return null;
+        }
+        if (text.length() <= max) {
+            return text;
+        }
+        return text.substring(0, max) + "\n…(已截断)";
+    }
+
+    @Tool("获取指定案件的详细信息。仅当摘要不足时对已给出的案件 id 调用；本轮最多1次。")
     public String getCaseDetail(
             @ToolMemoryId String sessionId,
             @P("案件ID") Long caseId) {
         log.info("Tool: getCaseDetail called with caseId={}", caseId);
+        String blocked = sessionToolGuard.check(sessionId, "getCaseDetail");
+        if (blocked != null) {
+            return blocked;
+        }
+        sessionToolGuard.record(sessionId, "getCaseDetail");
         ChatTiming.Stage stage = beginTool(sessionId, "getCaseDetail", "caseId=" + caseId);
         try {
             LegalCase c = caseMapper.selectById(caseId);
@@ -292,7 +430,7 @@ public class LegalTools {
         }
     }
 
-    @Tool("获取本会话已落库的对话历史。仅当用户明确要求回顾上文时使用；参数请传当前会话的 sessionId（UUID），不要传 current。")
+    @Tool("获取本会话已落库的对话历史。仅当用户明确要求回顾上文时使用；本轮最多1次。")
     public String getConversationHistory(
             @ToolMemoryId String memoryId,
             @P("当前会话 sessionId（UUID 字符串）；可与系统记忆 id 相同") String sessionId) {
@@ -302,6 +440,11 @@ public class LegalTools {
                 : memoryId;
         log.info("Tool: getConversationHistory called with sessionId='{}' (resolved='{}')",
                 sessionId, resolvedSession);
+        String blocked = sessionToolGuard.check(memoryId, "getConversationHistory");
+        if (blocked != null) {
+            return blocked;
+        }
+        sessionToolGuard.record(memoryId, "getConversationHistory");
         ChatTiming.Stage stage = beginTool(memoryId, "getConversationHistory", truncate(resolvedSession, 40));
         try {
             Long conversationId = resolveConversationId(resolvedSession);
@@ -347,7 +490,18 @@ public class LegalTools {
 
     private ChatTiming.Stage beginTool(String sessionId, String toolName, String detail) {
         ChatTimingRegistry.bind(sessionId);
+        ThoughtEventBus.bindSession(sessionId);
         ChatTiming timing = resolveTiming(sessionId);
+        Map<String, Object> running = new LinkedHashMap<>();
+        running.put("type", "tool");
+        running.put("name", toolName);
+        running.put("label", toolLabel(toolName));
+        running.put("status", "running");
+        if (detail != null && !detail.isBlank()) {
+            running.put("query", detail);
+            running.put("detail", "执行中…");
+        }
+        ThoughtEventBus.emit(sessionId, running);
         if (timing == null) {
             return null;
         }
@@ -363,6 +517,20 @@ public class LegalTools {
             timing.markToolEnded();
         }
         ChatTimingRegistry.setCurrentStage(null);
+    }
+
+    private static String toolLabel(String toolName) {
+        if (toolName == null) {
+            return "调用工具";
+        }
+        return switch (toolName) {
+            case "searchLegalKnowledge" -> "检索法律知识库";
+            case "searchWeb" -> "联网搜索";
+            case "searchCases" -> "搜索相关判例";
+            case "getCaseDetail" -> "获取案件详情";
+            case "getConversationHistory" -> "查阅对话历史";
+            default -> "调用工具 " + toolName;
+        };
     }
 
     private static ChatTiming resolveTiming(String sessionId) {
