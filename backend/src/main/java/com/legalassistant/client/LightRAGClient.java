@@ -113,9 +113,30 @@ public class LightRAGClient {
     }
 
     public JsonNode queryData(String query, String mode) {
+        return queryData(query, mode, null, null);
+    }
+
+    /**
+     * @param hlKeywords 高层关键词；非空时可避免 LightRAG 再调 LLM 抽词
+     * @param llKeywords 低层关键词
+     */
+    public JsonNode queryData(String query, String mode, List<String> hlKeywords, List<String> llKeywords) {
         ObjectNode body = objectMapper.createObjectNode();
         body.put("query", query);
         body.put("mode", mode != null ? mode : properties.getQueryMode());
+        body.put("top_k", properties.getTopK());
+        body.put("chunk_top_k", properties.getChunkTopK());
+        body.put("enable_rerank", properties.isEnableRerank());
+        body.put("only_need_context", true);
+
+        if (hlKeywords != null && !hlKeywords.isEmpty()) {
+            ArrayNode hl = body.putArray("hl_keywords");
+            hlKeywords.forEach(hl::add);
+        }
+        if (llKeywords != null && !llKeywords.isEmpty()) {
+            ArrayNode ll = body.putArray("ll_keywords");
+            llKeywords.forEach(ll::add);
+        }
 
         HttpEntity<String> request = new HttpEntity<>(body.toString(), jsonHeaders());
         String url = properties.getBaseUrl() + "/query/data";

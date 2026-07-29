@@ -5,6 +5,8 @@ import com.legalassistant.client.LightRAGClient;
 import com.legalassistant.config.LightRAGProperties;
 import com.legalassistant.mapper.DocumentMapper;
 import com.legalassistant.service.RAGService;
+import com.legalassistant.timing.ChatTiming;
+import com.legalassistant.timing.ChatTimingRegistry;
 import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.segment.TextSegment;
 import lombok.RequiredArgsConstructor;
@@ -49,12 +51,139 @@ public class LightRAGServiceImpl implements RAGService {
 
     @Override
     public List<TextSegment> search(String query, Long modelConfigId) {
-        JsonNode response = lightRAGClient.queryData(query, properties.getQueryMode());
-        JsonNode data = response.get("data");
-        if (data == null || data.isNull()) {
+        ChatTiming timing = ChatTimingRegistry.current();
+        String mode = properties.getQueryMode();
+        List<String> hlKeywords = null;
+        List<String> llKeywords = null;
+        if (properties.isProvideKeywords()) {
+            hlKeywords = extractHighLevelKeywords(query);
+            llKeywords = extractLowLevelKeywords(query);
+        }
+
+        String detail = "mode=" + mode
+                + ", top_k=" + properties.getTopK()
+                + ", rerank=" + properties.isEnableRerank()
+                + (hlKeywords != null ? ", hl=" + hlKeywords.size() : "");
+        ChatTiming.Stage httpStage = timing != null
+                ? timing.startChildStage("LightRAG.queryData", detail)
+                : null;
+        JsonNode response;
+        try {
+            response = lightRAGClient.queryData(query, mode, hlKeywords, llKeywords);
+            if (httpStage != null) {
+                httpStage.end("ok");
+            }
+        } catch (RuntimeException e) {
+            if (httpStage != null) {
+                httpStage.end("error=" + e.getMessage());
+            }
+            throw e;
+        }
+
+        ChatTiming.Stage formatStage = timing != null
+                ? timing.startChildStage("LightRAG.format", "entities/relations/chunks")
+                : null;
+        try {
+            JsonNode data = response.get("data");
+            if (data == null || data.isNull()) {
+                if (formatStage != null) {
+                    formatStage.end("empty");
+                }
+                return List.of();
+            }
+            List<TextSegment> segments = formatQueryData(data);
+            int beforeCap = segments.size();
+            if (segments.size() > properties.getMaxSegments()) {
+                segments = new ArrayList<>(segments.subList(0, properties.getMaxSegments()));
+            }
+            if (formatStage != null) {
+                int entities = sizeOf(data.get("entities"));
+                int relations = sizeOf(data.get("relationships"));
+                int chunks = sizeOf(data.get("chunks"));
+                formatStage.end(String.format(
+                        "segments=%d(capped from %d), entities=%d, relations=%d, chunks=%d",
+                        segments.size(), beforeCap, entities, relations, chunks));
+            }
+            return segments;
+        } catch (RuntimeException e) {
+            if (formatStage != null) {
+                formatStage.end("error=" + e.getMessage());
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * 高层关键词：法律主题短语（优先命中图谱实体名）。
+     */
+    static List<String> extractHighLevelKeywords(String query) {
+        if (query == null || query.isBlank()) {
             return List.of();
         }
-        return formatQueryData(data);
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        String q = query.replaceAll("[\\p{Punct}\\s？?！!。，、；;：:（）()【】\\[\\]《》]+", " ").trim();
+        String[] phrases = {
+                "未签订书面劳动合同", "未签劳动合同", "未签订劳动合同", "双倍工资",
+                "无固定期限劳动合同", "劳动合同法", "劳动争议", "书面劳动合同",
+                "经济补偿", "违法解除", "试用期", "加班费"
+        };
+        for (String p : phrases) {
+            if (q.contains(p) || containsLoose(q, p)) {
+                out.add(p);
+            }
+        }
+        // 归一：用户说「未签」时补全库内常用表述
+        if (q.contains("未签") && !out.contains("未签订书面劳动合同")) {
+            out.add("未签订书面劳动合同");
+            out.add("未签劳动合同");
+        }
+        if (q.contains("双倍")) {
+            out.add("双倍工资");
+        }
+        if (out.isEmpty() && q.length() >= 4) {
+            out.add(q.length() > 16 ? q.substring(0, 16) : q);
+        }
+        return new ArrayList<>(out);
+    }
+
+    /**
+     * 低层关键词：短实体词，细化检索。
+     */
+    static List<String> extractLowLevelKeywords(String query) {
+        if (query == null || query.isBlank()) {
+            return List.of();
+        }
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        String q = query.replaceAll("[\\p{Punct}\\s？?！!。，、；;：:（）()【】\\[\\]《》]+", "");
+        String[] terms = {"劳动合同", "双倍工资", "无固定期限", "书面合同", "第八十二条", "第十四条", "仲裁", "用工"};
+        for (String t : terms) {
+            if (q.contains(t.replace("合同", "")) || q.contains(t)) {
+                out.add(t);
+            }
+        }
+        // 2～4 字滑动窗口（限量）
+        int added = 0;
+        for (int len = 4; len >= 2 && added < 6; len--) {
+            for (int i = 0; i + len <= q.length() && added < 6; i++) {
+                String gram = q.substring(i, i + len);
+                if (gram.chars().allMatch(c -> Character.UnicodeScript.of(c) == Character.UnicodeScript.HAN)) {
+                    out.add(gram);
+                    added++;
+                }
+            }
+        }
+        return new ArrayList<>(out);
+    }
+
+    private static boolean containsLoose(String query, String phrase) {
+        // 「未签劳动合同」可匹配「未签订劳动合同」类：去掉「订/书面」后再比
+        String compactQ = query.replace("订", "").replace("书面", "");
+        String compactP = phrase.replace("订", "").replace("书面", "");
+        return compactQ.contains(compactP) || compactP.contains(compactQ);
+    }
+
+    private static int sizeOf(JsonNode node) {
+        return node != null && node.isArray() ? node.size() : 0;
     }
 
     @Override
