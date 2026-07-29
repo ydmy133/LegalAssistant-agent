@@ -60,7 +60,11 @@ services:
       LLM_BINDING: openai
       LLM_BINDING_HOST: https://api.deepseek.com/v1
       LLM_MODEL: deepseek-chat
-      LLM_BINDING_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # DeepSeek key for indexing/query keyword extraction (openai binding).
+      # Do NOT nest ${A:-${B}} — compose appends a stray '}' into the value.
+      LLM_BINDING_API_KEY: ${DEEPSEEK_API_KEY}
+      # openai.py falls back to OPENAI_API_KEY when api_key is empty
+      OPENAI_API_KEY: ${DEEPSEEK_API_KEY}
       LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY:-change-me-lightrag-api-key}
     volumes:
       - lightrag-data:/app/data
