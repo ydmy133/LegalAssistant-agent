@@ -2,6 +2,7 @@ package com.legalassistant.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.legalassistant.agent.ChatAgent;
 import com.legalassistant.agent.LegalTools;
 import com.legalassistant.entity.Conversation;
@@ -13,9 +14,12 @@ import com.legalassistant.mapper.MessageMapper;
 import com.legalassistant.mapper.UserModelConfigMapper;
 import com.legalassistant.service.ChatService;
 import com.legalassistant.service.ModelService;
+import com.legalassistant.timing.ChatTiming;
+import com.legalassistant.timing.ChatTimingRegistry;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.TokenStream;
 import lombok.RequiredArgsConstructor;
@@ -26,54 +30,90 @@ import reactor.core.publisher.FluxSink;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class ChatServiceImpl implements ChatService {
 
+    public static final String TIMING_PREFIX = "[TIMING]";
+
     private final LegalTools legalTools;
     private final ModelService modelService;
     private final ConversationMapper conversationMapper;
     private final MessageMapper messageMapper;
     private final UserModelConfigMapper modelConfigMapper;
+    private final ObjectMapper objectMapper;
 
     private final Map<String, MessageWindowChatMemory> memoryCache = new ConcurrentHashMap<>();
 
     @Override
     public String sendMessage(String sessionId, String content, Long modelConfigId, Long userId) {
-        Conversation conv = getOrCreateConversation(sessionId, userId);
-        saveMessage(conv.getId(), "user", content);
+        ChatTiming timing = ChatTimingRegistry.begin(sessionId);
+        ChatTiming.Stage prepare = timing.startStage("准备请求", "sync");
+        try {
+            Conversation conv = getOrCreateConversation(sessionId, userId);
+            saveMessage(conv.getId(), "user", content);
 
-        Long configId = resolveModelConfigId(modelConfigId, userId);
-        ChatModel chatModel = modelService.buildChatModel(configId);
+            Long configId = resolveModelConfigId(modelConfigId, userId);
+            UserModelConfig config = modelConfigMapper.selectById(configId);
+            if (config != null) {
+                timing.setModelName(config.getProviderName() + "/" + config.getModelName());
+            }
+            ChatModel chatModel = modelService.buildChatModel(configId);
+            prepare.end("modelReady");
 
-        ChatAgent agent = AiServices.builder(ChatAgent.class)
-                .chatModel(chatModel)
-                .tools(legalTools)
-                .chatMemoryProvider(memoryId -> memoryCache.computeIfAbsent(
-                        String.valueOf(memoryId),
-                        k -> MessageWindowChatMemory.withMaxMessages(20)))
-                .build();
+            ChatTiming.Stage agentStage = timing.startStage("Agent调用", "非流式");
+            ChatAgent agent = AiServices.builder(ChatAgent.class)
+                    .chatModel(chatModel)
+                    .tools(legalTools)
+                    .chatMemoryProvider(memoryId -> memoryCache.computeIfAbsent(
+                            String.valueOf(memoryId),
+                            k -> MessageWindowChatMemory.withMaxMessages(20)))
+                    .build();
 
-        String response = agent.chat(sessionId, content);
-        saveMessage(conv.getId(), "assistant", response);
+            String response = agent.chat(sessionId, content);
+            agentStage.end("chars=" + (response != null ? response.length() : 0));
 
-        if ("新对话".equals(conv.getTitle())) {
-            conv.setTitle(content.length() > 50 ? content.substring(0, 50) + "..." : content);
-            conversationMapper.updateById(conv);
+            ChatTiming.Stage persist = timing.startStage("持久化回复", null);
+            saveMessage(conv.getId(), "assistant", response);
+            if ("新对话".equals(conv.getTitle())) {
+                conv.setTitle(content.length() > 50 ? content.substring(0, 50) + "..." : content);
+                conversationMapper.updateById(conv);
+            }
+            persist.end();
+            timing.markStreamComplete();
+            log.info("Chat timing [{}]: {}", sessionId, timing.toMap().get("summary"));
+            return response;
+        } finally {
+            ChatTimingRegistry.end(sessionId);
         }
-
-        return response;
     }
 
     @Override
     public Flux<String> sendMessageStream(String sessionId, String content, Long modelConfigId, Long userId) {
-        Conversation conv = getOrCreateConversation(sessionId, userId);
-        saveMessage(conv.getId(), "user", content);
+        ChatTiming timing = ChatTimingRegistry.begin(sessionId);
+        ChatTiming.Stage prepare = timing.startStage("准备请求", "保存消息/构建模型");
 
-        Long configId = resolveModelConfigId(modelConfigId, userId);
-        StreamingChatModel streamingChatModel = modelService.buildStreamingChatModel(configId);
+        Conversation conv;
+        StreamingChatModel streamingChatModel;
+        try {
+            conv = getOrCreateConversation(sessionId, userId);
+            saveMessage(conv.getId(), "user", content);
+
+            Long configId = resolveModelConfigId(modelConfigId, userId);
+            UserModelConfig config = modelConfigMapper.selectById(configId);
+            if (config != null) {
+                timing.setModelName(config.getProviderName() + "/" + config.getModelName());
+            }
+            streamingChatModel = modelService.buildStreamingChatModel(configId);
+            prepare.end("modelReady");
+        } catch (RuntimeException e) {
+            prepare.end("error=" + e.getMessage());
+            ChatTimingRegistry.end(sessionId);
+            throw e;
+        }
 
         ChatAgent agent = AiServices.builder(ChatAgent.class)
                 .streamingChatModel(streamingChatModel)
@@ -84,36 +124,100 @@ public class ChatServiceImpl implements ChatService {
                 .build();
 
         return Flux.create(sink -> {
+            ChatTimingRegistry.bind(timing);
             StringBuilder full = new StringBuilder();
+            AtomicBoolean firstTokenSeen = new AtomicBoolean(false);
+            ChatTiming.Stage waitFirstLlm = timing.startStage("等待模型首轮", "决策是否调工具/直接回答");
+            final ChatTiming.Stage[] streamStage = {null};
+
             TokenStream tokenStream = agent.streamChat(sessionId, content);
             tokenStream
+                    .onToolExecuted(toolExecution -> {
+                        ChatTimingRegistry.bind(timing);
+                        log.info("Tool executed: {} (session={})", toolExecution.request().name(), sessionId);
+                    })
                     .onPartialResponse(partial -> {
+                        ChatTimingRegistry.bind(timing);
                         if (partial != null && !partial.isEmpty()) {
+                            if (firstTokenSeen.compareAndSet(false, true)) {
+                                timing.markFirstToken();
+                                if (!waitFirstLlm.isEnded()) {
+                                    waitFirstLlm.end(timing.getFirstToolStartMs() == null
+                                            ? "开始流式输出"
+                                            : "工具后开始流式输出");
+                                }
+                                streamStage[0] = timing.startStage("流式生成回复", "首字已出");
+                            }
                             full.append(partial);
                             sink.next(partial);
                         }
                     })
                     .onCompleteResponse(response -> {
-                        String text = response != null && response.aiMessage() != null
-                                ? response.aiMessage().text()
-                                : null;
-                        if (text == null || text.isBlank()) {
-                            text = full.toString();
+                        ChatTimingRegistry.bind(timing);
+                        try {
+                            timing.markStreamComplete();
+                            if (!waitFirstLlm.isEnded()) {
+                                waitFirstLlm.end("完成时仍未产生首字");
+                            }
+                            if (streamStage[0] != null && !streamStage[0].isEnded()) {
+                                streamStage[0].end("chars=" + full.length());
+                            }
+
+                            String text = response != null && response.aiMessage() != null
+                                    ? response.aiMessage().text()
+                                    : null;
+                            if (text == null || text.isBlank()) {
+                                text = full.toString();
+                            }
+                            if (response != null && response.tokenUsage() != null) {
+                                TokenUsage usage = response.tokenUsage();
+                                timing.setTokenUsage(usage.inputTokenCount(), usage.outputTokenCount());
+                            }
+
+                            ChatTiming.Stage persist = timing.startStage("持久化回复", null);
+                            saveMessage(conv.getId(), "assistant", text);
+                            if ("新对话".equals(conv.getTitle())) {
+                                conv.setTitle(content.length() > 50 ? content.substring(0, 50) + "..." : content);
+                                conversationMapper.updateById(conv);
+                            }
+                            persist.end();
+
+                            Map<String, Object> timingMap = timing.toMap();
+                            log.info("Chat timing [{}]: {}", sessionId, timingMap.get("summary"));
+                            sink.next(TIMING_PREFIX + objectMapper.writeValueAsString(timingMap));
+                            sink.next("[DONE]");
+                            sink.complete();
+                        } catch (Exception e) {
+                            log.error("Failed to complete streaming chat, sessionId={}", sessionId, e);
+                            sink.error(e);
+                        } finally {
+                            ChatTimingRegistry.end(sessionId);
                         }
-                        saveMessage(conv.getId(), "assistant", text);
-                        if ("新对话".equals(conv.getTitle())) {
-                            conv.setTitle(content.length() > 50 ? content.substring(0, 50) + "..." : content);
-                            conversationMapper.updateById(conv);
-                        }
-                        sink.next("[DONE]");
-                        sink.complete();
                     })
                     .onError(error -> {
-                        log.error("Streaming chat failed, sessionId={}", sessionId, error);
-                        if (full.length() > 0) {
-                            saveMessage(conv.getId(), "assistant", full.toString());
+                        ChatTimingRegistry.bind(timing);
+                        try {
+                            timing.markStreamComplete();
+                            if (!waitFirstLlm.isEnded()) {
+                                waitFirstLlm.end("error");
+                            }
+                            if (streamStage[0] != null && !streamStage[0].isEnded()) {
+                                streamStage[0].end("error");
+                            }
+                            log.error("Streaming chat failed, sessionId={}, timing={}",
+                                    sessionId, timing.toMap().get("summary"), error);
+                            if (full.length() > 0) {
+                                saveMessage(conv.getId(), "assistant", full.toString());
+                            }
+                            try {
+                                sink.next(TIMING_PREFIX + objectMapper.writeValueAsString(timing.toMap()));
+                            } catch (Exception ignored) {
+                                // ignore timing serialization failure on error path
+                            }
+                            sink.error(error);
+                        } finally {
+                            ChatTimingRegistry.end(sessionId);
                         }
-                        sink.error(error);
                     })
                     .start();
         }, FluxSink.OverflowStrategy.BUFFER);
