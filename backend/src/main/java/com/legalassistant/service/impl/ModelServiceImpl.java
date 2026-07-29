@@ -26,6 +26,10 @@ public class ModelServiceImpl implements ModelService {
     @Value("${langchain4j.open-ai.embedding-model.model-name:text-embedding-3-small}")
     private String embeddingModelName;
 
+    /** 输出安全天花板（非目标字数）；过低会导致长答被 API finish_reason=length 截断 */
+    @Value("${langchain4j.open-ai.chat-model.max-tokens:8192}")
+    private Integer maxTokens;
+
     @Override
     public ChatModel buildChatModel(Long modelConfigId) {
         UserModelConfig config = modelConfigMapper.selectById(modelConfigId);
@@ -36,9 +40,9 @@ public class ModelServiceImpl implements ModelService {
         var builder = OpenAiChatModel.builder()
                 .apiKey(config.getApiKey())
                 .modelName(config.getModelName())
-                .temperature(0.7)
+                .temperature(0.3)
                 .timeout(Duration.ofSeconds(120))
-                .maxTokens(1200)
+                .maxTokens(maxTokens)
                 .logRequests(true)
                 .logResponses(true);
 
@@ -60,9 +64,9 @@ public class ModelServiceImpl implements ModelService {
         var builder = OpenAiStreamingChatModel.builder()
                 .apiKey(config.getApiKey())
                 .modelName(config.getModelName())
-                .temperature(0.7)
+                .temperature(0.3)
                 .timeout(Duration.ofSeconds(120))
-                .maxTokens(1200)
+                .maxTokens(maxTokens)
                 .logRequests(true)
                 .logResponses(true);
 

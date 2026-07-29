@@ -1,8 +1,10 @@
 package com.legalassistant.agent;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.legalassistant.entity.Conversation;
 import com.legalassistant.entity.LegalCase;
 import com.legalassistant.entity.Message;
+import com.legalassistant.mapper.ConversationMapper;
 import com.legalassistant.mapper.LegalCaseMapper;
 import com.legalassistant.mapper.MessageMapper;
 import com.legalassistant.service.DocumentService;
@@ -32,8 +34,9 @@ public class LegalTools {
     private final DocumentService documentService;
     private final LegalCaseMapper caseMapper;
     private final MessageMapper messageMapper;
+    private final ConversationMapper conversationMapper;
 
-    @Tool("检索法律知识库（条文/要点/实体关系）。同一问题通常只调用一次，用原问题或核心关键词即可；勿因换词重复检索。")
+    @Tool("检索法律知识库（条文/要点），并自动附带最多2条相关判例摘要。常规问题只调用本工具一次即可；勿再调 searchCases/getCaseDetail，除非摘要明确不足。")
     public String searchLegalKnowledge(
             @ToolMemoryId String sessionId,
             @P("检索关键词或完整问题（优先一次写全）") String query) {
@@ -41,28 +44,40 @@ public class LegalTools {
         ChatTiming.Stage stage = beginTool(sessionId, "searchLegalKnowledge",
                 truncate(query, 80));
         try {
+            String knowledge;
+            String source;
             List<TextSegment> results = ragService.search(query, null);
             if (!results.isEmpty()) {
-                endTool(stage, "hits=" + results.size() + ", source=lightrag");
-                return formatSegments(results);
-            }
-            ChatTiming timing = resolveTiming(sessionId);
-            ChatTiming.Stage fallback = timing != null
-                    ? timing.startChildStage("keywordFallback", "预置文档关键词检索")
-                    : null;
-            try {
-                String text = documentService.searchPresetDocumentsByKeyword(query);
-                if (fallback != null) {
-                    fallback.end("chars=" + (text != null ? text.length() : 0));
+                knowledge = formatSegments(results);
+                source = "lightrag";
+            } else {
+                ChatTiming timing = resolveTiming(sessionId);
+                ChatTiming.Stage fallback = timing != null
+                        ? timing.startChildStage("keywordFallback", "预置文档关键词检索")
+                        : null;
+                try {
+                    knowledge = documentService.searchPresetDocumentsByKeyword(query);
+                    if (fallback != null) {
+                        fallback.end("chars=" + (knowledge != null ? knowledge.length() : 0));
+                    }
+                    source = "keywordFallback";
+                } catch (RuntimeException e) {
+                    if (fallback != null) {
+                        fallback.end("error=" + e.getMessage());
+                    }
+                    throw e;
                 }
-                endTool(stage, "hits=0, source=keywordFallback");
-                return text;
-            } catch (RuntimeException e) {
-                if (fallback != null) {
-                    fallback.end("error=" + e.getMessage());
-                }
-                throw e;
             }
+
+            String casesBlock = formatRelatedCases(query, 2);
+            endTool(stage, "hits=" + (results != null ? results.size() : 0)
+                    + ", source=" + source
+                    + ", casesAttached=" + (casesBlock != null && !casesBlock.isBlank()));
+            if (casesBlock == null || casesBlock.isBlank()) {
+                return knowledge;
+            }
+            return knowledge + "\n\n---\n【相关判例摘要】（已附带，一般无需再调 searchCases/getCaseDetail）\n"
+                    + casesBlock;
         } catch (Exception e) {
             log.warn("LightRAG search failed, fallback to keyword search: {}", e.getMessage());
             ChatTiming timing = resolveTiming(sessionId);
@@ -71,11 +86,15 @@ public class LegalTools {
                     : null;
             try {
                 String text = documentService.searchPresetDocumentsByKeyword(query);
+                String casesBlock = formatRelatedCases(query, 2);
                 if (fallback != null) {
                     fallback.end("chars=" + (text != null ? text.length() : 0));
                 }
                 endTool(stage, "error=" + e.getMessage() + ", source=keywordFallback");
-                return text;
+                if (casesBlock == null || casesBlock.isBlank()) {
+                    return text;
+                }
+                return text + "\n\n---\n【相关判例摘要】\n" + casesBlock;
             } catch (RuntimeException fallbackError) {
                 if (fallback != null) {
                     fallback.end("error=" + fallbackError.getMessage());
@@ -86,7 +105,26 @@ public class LegalTools {
         }
     }
 
-    @Tool("按案由/关键词搜索相关判例。同一问题通常只调用一次；优先传短词如「未签劳动合同」「双倍工资」。结果含 id，需细节时用 getCaseDetail(id)。")
+    /**
+     * 自动附带判例，减少额外 tool 轮次。
+     */
+    private String formatRelatedCases(String query, int limit) {
+        List<LegalCase> cases = searchCasesByKeyword(query);
+        if (cases.isEmpty()) {
+            return "";
+        }
+        return cases.stream()
+                .limit(limit)
+                .map(c -> String.format(
+                        "[id=%d][案号: %s] %s | 法院: %s | 摘要: %s",
+                        c.getId(),
+                        c.getCaseNumber(), c.getTitle(),
+                        c.getCourt() != null ? c.getCourt() : "未知",
+                        c.getSummary() != null ? c.getSummary() : "无"))
+                .collect(Collectors.joining("\n---\n"));
+    }
+
+    @Tool("按案由/关键词搜索相关判例。仅当 searchLegalKnowledge 未附带判例时使用；摘要已够用时不要再调 getCaseDetail。")
     public String searchCases(
             @ToolMemoryId String sessionId,
             @P("案由或短关键词（如：未签劳动合同、双倍工资）；可用空格分隔多个词") String keyword) {
@@ -219,7 +257,7 @@ public class LegalTools {
                 .collect(Collectors.joining("\n\n"));
     }
 
-    @Tool("获取指定案件的详细信息")
+    @Tool("获取指定案件的详细信息。仅当 searchLegalKnowledge/searchCases 摘要不足以回答时，对已给出的案件 id 调用一次；常规问答禁止调用。")
     public String getCaseDetail(
             @ToolMemoryId String sessionId,
             @P("案件ID") Long caseId) {
@@ -254,17 +292,26 @@ public class LegalTools {
         }
     }
 
-    @Tool("获取对话历史记录，用于理解上下文")
+    @Tool("获取本会话已落库的对话历史。仅当用户明确要求回顾上文时使用；参数请传当前会话的 sessionId（UUID），不要传 current。")
     public String getConversationHistory(
             @ToolMemoryId String memoryId,
-            @P("会话ID(sessionId)") String sessionId) {
-        log.info("Tool: getConversationHistory called with sessionId='{}'", sessionId);
-        ChatTiming.Stage stage = beginTool(memoryId, "getConversationHistory", truncate(sessionId, 40));
+            @P("当前会话 sessionId（UUID 字符串）；可与系统记忆 id 相同") String sessionId) {
+        String resolvedSession = (sessionId != null && !sessionId.isBlank()
+                && !"current".equalsIgnoreCase(sessionId.trim()))
+                ? sessionId.trim()
+                : memoryId;
+        log.info("Tool: getConversationHistory called with sessionId='{}' (resolved='{}')",
+                sessionId, resolvedSession);
+        ChatTiming.Stage stage = beginTool(memoryId, "getConversationHistory", truncate(resolvedSession, 40));
         try {
+            Long conversationId = resolveConversationId(resolvedSession);
+            if (conversationId == null) {
+                endTool(stage, "noConversation");
+                return "暂无对话历史。";
+            }
             List<Message> messages = messageMapper.selectList(
                     new LambdaQueryWrapper<Message>()
-                            .eq(Message::getConversationId,
-                                    Long.parseLong(sessionId))
+                            .eq(Message::getConversationId, conversationId)
                             .orderByAsc(Message::getCreateTime)
                             .last("LIMIT 20")
             );
@@ -280,6 +327,22 @@ public class LegalTools {
             endTool(stage, "error=" + e.getMessage());
             throw e;
         }
+    }
+
+    private Long resolveConversationId(String sessionOrId) {
+        if (sessionOrId == null || sessionOrId.isBlank()) {
+            return null;
+        }
+        String raw = sessionOrId.trim();
+        if (raw.matches("\\d+")) {
+            return Long.parseLong(raw);
+        }
+        Conversation conv = conversationMapper.selectOne(
+                new LambdaQueryWrapper<Conversation>()
+                        .eq(Conversation::getSessionId, raw)
+                        .last("LIMIT 1")
+        );
+        return conv != null ? conv.getId() : null;
     }
 
     private ChatTiming.Stage beginTool(String sessionId, String toolName, String detail) {

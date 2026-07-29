@@ -17,9 +17,9 @@ public class LightRAGProperties {
     private String fileSourcePrefix = "legal-doc";
 
     /** 传给 LightRAG top_k；较小可加快图谱检索 */
-    private int topK = 20;
+    private int topK = 15;
     /** 初始文本块数量 */
-    private int chunkTopK = 8;
+    private int chunkTopK = 6;
     /** 关闭重排可明显缩短 query/data */
     private boolean enableRerank = false;
     /**
@@ -28,5 +28,13 @@ public class LightRAGProperties {
      */
     private boolean provideKeywords = true;
     /** 写入 Agent 上下文的最大 TextSegment 数（实体+关系+块合计） */
-    private int maxSegments = 24;
+    private int maxSegments = 16;
+    /** 同语义短缓存 TTL（秒）；0 关闭。宜 ≥ 数分钟，避免复测冷路径回升到数秒 */
+    private long queryCacheTtlSeconds = 600;
+    /** format 时优先保留的 chunk 上限 */
+    private int maxChunkSegments = 8;
+    /** format 时实体段上限 */
+    private int maxEntitySegments = 5;
+    /** format 时关系段上限 */
+    private int maxRelationSegments = 3;
 }

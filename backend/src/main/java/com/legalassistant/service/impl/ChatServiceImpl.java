@@ -76,15 +76,21 @@ public class ChatServiceImpl implements ChatService {
             String response = agent.chat(sessionId, content);
             agentStage.end("chars=" + (response != null ? response.length() : 0));
 
+            timing.markStreamComplete();
+            Map<String, Object> timingMap = timing.toMap();
             ChatTiming.Stage persist = timing.startStage("持久化回复", null);
-            saveMessage(conv.getId(), "assistant", response);
+            try {
+                saveMessage(conv.getId(), "assistant", response,
+                        objectMapper.writeValueAsString(Map.of("timing", timingMap)));
+            } catch (Exception metaEx) {
+                saveMessage(conv.getId(), "assistant", response, null);
+            }
             if ("新对话".equals(conv.getTitle())) {
                 conv.setTitle(content.length() > 50 ? content.substring(0, 50) + "..." : content);
                 conversationMapper.updateById(conv);
             }
             persist.end();
-            timing.markStreamComplete();
-            log.info("Chat timing [{}]: {}", sessionId, timing.toMap().get("summary"));
+            log.info("Chat timing [{}]: {}", sessionId, timingMap.get("summary"));
             return response;
         } finally {
             ChatTimingRegistry.end(sessionId);
@@ -174,15 +180,20 @@ public class ChatServiceImpl implements ChatService {
                                 timing.setTokenUsage(usage.inputTokenCount(), usage.outputTokenCount());
                             }
 
+                            Map<String, Object> timingMap = timing.toMap();
                             ChatTiming.Stage persist = timing.startStage("持久化回复", null);
-                            saveMessage(conv.getId(), "assistant", text);
+                            try {
+                                saveMessage(conv.getId(), "assistant", text,
+                                        objectMapper.writeValueAsString(Map.of("timing", timingMap)));
+                            } catch (Exception metaEx) {
+                                saveMessage(conv.getId(), "assistant", text, null);
+                            }
                             if ("新对话".equals(conv.getTitle())) {
                                 conv.setTitle(content.length() > 50 ? content.substring(0, 50) + "..." : content);
                                 conversationMapper.updateById(conv);
                             }
                             persist.end();
 
-                            Map<String, Object> timingMap = timing.toMap();
                             log.info("Chat timing [{}]: {}", sessionId, timingMap.get("summary"));
                             sink.next(TIMING_PREFIX + objectMapper.writeValueAsString(timingMap));
                             sink.next("[DONE]");
@@ -207,7 +218,7 @@ public class ChatServiceImpl implements ChatService {
                             log.error("Streaming chat failed, sessionId={}, timing={}",
                                     sessionId, timing.toMap().get("summary"), error);
                             if (full.length() > 0) {
-                                saveMessage(conv.getId(), "assistant", full.toString());
+                                saveMessage(conv.getId(), "assistant", full.toString(), timingMetadataJson(timing));
                             }
                             try {
                                 sink.next(TIMING_PREFIX + objectMapper.writeValueAsString(timing.toMap()));
@@ -302,10 +313,24 @@ public class ChatServiceImpl implements ChatService {
     }
 
     private void saveMessage(Long conversationId, String role, String content) {
+        saveMessage(conversationId, role, content, null);
+    }
+
+    private void saveMessage(Long conversationId, String role, String content, String metadataJson) {
         Message msg = new Message();
         msg.setConversationId(conversationId);
         msg.setRole(role);
         msg.setContent(content);
+        msg.setMetadataJson(metadataJson);
         messageMapper.insert(msg);
+    }
+
+    private String timingMetadataJson(ChatTiming timing) {
+        try {
+            return objectMapper.writeValueAsString(Map.of("timing", timing.toMap()));
+        } catch (Exception e) {
+            log.warn("Failed to serialize timing metadata: {}", e.getMessage());
+            return null;
+        }
     }
 }

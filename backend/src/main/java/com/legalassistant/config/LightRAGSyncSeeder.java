@@ -69,5 +69,15 @@ public class LightRAGSyncSeeder implements ApplicationListener<ApplicationReadyE
         }
 
         log.info("LightRAG preset sync finished: synced={}, skipped={}", synced, skipped);
+
+        // 预热 hybrid query + 后端语义缓存，避免首条用户问答再撞 embedding 冷路径（~8s）
+        try {
+            long t0 = System.currentTimeMillis();
+            var warmed = ragService.search("未签劳动合同有什么后果？", null);
+            log.info("LightRAG query warmup done: segments={}, {}ms",
+                    warmed != null ? warmed.size() : 0, System.currentTimeMillis() - t0);
+        } catch (Exception e) {
+            log.warn("LightRAG query warmup skipped: {}", e.getMessage());
+        }
     }
 }

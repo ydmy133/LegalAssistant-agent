@@ -190,12 +190,31 @@ const loadMessages = async (sessionId) => {
   if (!sessionId) return
   try {
     const res = await getMessages(sessionId)
-    messages.value = (res.data.records || []).map(m => ({
-      role: m.role,
-      content: m.content,
-    }))
+    messages.value = (res.data.records || []).map(m => {
+      const timing = extractStoredTiming(m)
+      return {
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        timing,
+        durationMs: timing?.totalMs ?? null,
+        showTiming: false,
+      }
+    })
     scrollBottom()
   } catch {}
+}
+
+/** 从消息 metadataJson 恢复耗时（刷新/切会话后仍可显示） */
+const extractStoredTiming = (m) => {
+  const raw = m?.metadataJson ?? m?.metadata_json
+  if (!raw) return null
+  try {
+    const meta = typeof raw === 'string' ? JSON.parse(raw) : raw
+    return meta?.timing || null
+  } catch {
+    return null
+  }
 }
 
 const handleSend = async () => {

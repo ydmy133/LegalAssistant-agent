@@ -51,17 +51,18 @@ langchain4j:
     chat-model:
       api-key: ${OPENAI_API_KEY:your-api-key}
       model-name: gpt-4o-mini
-      temperature: 0.7
+      temperature: 0.3
       timeout: 120s
-      max-tokens: 1200
+      # 安全天花板，不是目标篇幅；详细长答勿再压低以免 finish_reason=length
+      max-tokens: 8192
       log-requests: true
       log-responses: true
     streaming-chat-model:
       api-key: ${OPENAI_API_KEY:your-api-key}
       model-name: gpt-4o-mini
-      temperature: 0.7
+      temperature: 0.3
       timeout: 120s
-      max-tokens: 1200
+      max-tokens: 8192
     embedding-model:
       api-key: ${OPENAI_API_KEY:your-api-key}
       model-name: text-embedding-3-small
@@ -85,8 +86,10 @@ legal:
     ingest-poll-interval-ms: 2000
     ingest-poll-timeout-seconds: 600
     file-source-prefix: legal-doc
-    top-k: ${LIGHTRAG_TOP_K:20}
-    chunk-top-k: ${LIGHTRAG_CHUNK_TOP_K:8}
+    top-k: ${LIGHTRAG_TOP_K:15}
+    chunk-top-k: ${LIGHTRAG_CHUNK_TOP_K:6}
     enable-rerank: ${LIGHTRAG_ENABLE_RERANK:false}
     provide-keywords: ${LIGHTRAG_PROVIDE_KEYWORDS:true}
-    max-segments: ${LIGHTRAG_MAX_SEGMENTS:24}
+    max-segments: ${LIGHTRAG_MAX_SEGMENTS:16}
+    # 拉长进程内缓存，避免隔几分钟复测又走 ~8s 冷路径；键按语义关键词归一
+    query-cache-ttl-seconds: ${LIGHTRAG_QUERY_CACHE_TTL:600}

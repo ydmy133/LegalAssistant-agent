@@ -22,25 +22,37 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: legal-ollama
+    restart: unless-stopped
+    environment:
+      # 服务级默认 keep_alive：-1 = 模型常驻内存，避免 bge-m3 冷加载拖慢 LightRAG
+      OLLAMA_KEEP_ALIVE: "-1"
     ports:
       - "11434:11434"
     volumes:
       - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
 
   ollama-init:
     image: ollama/ollama:latest
     container_name: legal-ollama-init
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     environment:
       OLLAMA_HOST: http://ollama:11434
+      OLLAMA_KEEP_ALIVE: "-1"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        echo "Waiting for Ollama..."
-        until ollama list >/dev/null 2>&1; do sleep 2; done
-        echo "Pulling bge-m3..."
+        echo "Pulling bge-m3 if missing..."
         ollama pull bge-m3
+        echo "Warming bge-m3 (server OLLAMA_KEEP_ALIVE should be -1)..."
+        ollama run bge-m3 "劳动合同" --keepalive -1 2>/dev/null || true
         echo "bge-m3 ready"
     restart: "no"
 

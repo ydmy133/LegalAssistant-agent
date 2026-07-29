@@ -23,6 +23,8 @@ export OPENAI_API_KEY="sk-..."
 ```bash
 cp deploy/lightrag/env.example deploy/lightrag/.env   # fill LLM_BINDING_API_KEY
 docker compose up -d                                    # MySQL + Redis + Ollama + LightRAG
+# Ollama 默认 OLLAMA_KEEP_ALIVE=-1（bge-m3 常驻）；若曾手动起过旧容器，需：
+# docker-compose -f docker-compose.yml up -d --force-recreate ollama
 mysql -u root -p123123 < backend/sql/init.sql         # Initialize database tables
 ```
 
