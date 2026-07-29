@@ -107,3 +107,119 @@ export function parseSseBuffer(buffer) {
 
   return { events, remaining }
 }
+
+/**
+ * 从消息 metadataJson 提取思考步骤（刷新后可回显）
+ */
+export function extractThoughtSteps(metaOrRaw) {
+  if (!metaOrRaw) return []
+  try {
+    const meta = typeof metaOrRaw === 'string' ? JSON.parse(metaOrRaw) : metaOrRaw
+    return dedupeThoughtSteps(Array.isArray(meta?.thoughtSteps) ? meta.thoughtSteps : [])
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 合并连续相同步骤；同 name 的 tool/status 生命周期（running→done）合并为一行。
+ */
+export function dedupeThoughtSteps(steps) {
+  if (!Array.isArray(steps) || steps.length === 0) return []
+  const out = []
+  for (const step of steps) {
+    if (!step) continue
+    const upsertIdx = findUpsertIndex(out, step)
+    if (upsertIdx >= 0) {
+      out[upsertIdx] = { ...out[upsertIdx], ...step }
+      continue
+    }
+    const prev = out[out.length - 1]
+    const key = thoughtStepKey(step)
+    if (prev && thoughtStepKey(prev) === key) {
+      prev.repeat = (prev.repeat || 1) + 1
+      if (step.detail) prev.detail = step.detail
+      if (step.status) prev.status = step.status
+      if (step.durationMs != null) prev.durationMs = step.durationMs
+      continue
+    }
+    out.push({ ...step })
+  }
+  return out
+}
+
+function findUpsertIndex(steps, step) {
+  const type = step.type || ''
+  const name = step.name
+  if (!name || (type !== 'tool' && type !== 'status')) return -1
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const prev = steps[i]
+    if ((prev.type || '') === type && prev.name === name) {
+      return i
+    }
+  }
+  return -1
+}
+
+function thoughtStepKey(step) {
+  return [step.type || '', step.label || '', step.query || '', step.name || ''].join('\u0001')
+}
+
+const TOOL_VERB = {
+  searchLegalKnowledge: '检索',
+  searchWeb: '搜索',
+  searchCases: '查阅',
+  getCaseDetail: '查阅',
+  getConversationHistory: '查阅',
+}
+
+/**
+ * Thought 面板标题：流式中 / 完成后 verb-group（类 Cursor / grok-build）
+ */
+export function thoughtSummaryLabel(steps, { streaming = false, totalMs = null } = {}) {
+  if (!steps || steps.length === 0) {
+    return streaming ? 'Thinking…' : 'Thought briefly'
+  }
+
+  if (streaming) {
+    const last = steps[steps.length - 1]
+    if (last?.type === 'tool') {
+      const verb = last.status === 'done' ? 'Ran' : 'Running'
+      return `${verb} ${last.label || last.name}…`
+    }
+    return last?.label ? `${last.label}…` : 'Thinking…'
+  }
+
+  const tools = steps.filter((s) => s.type === 'tool')
+  const durationPart = totalMs != null && totalMs > 0 ? ` for ${formatDuration(totalMs)}` : ''
+
+  if (tools.length === 0) {
+    return `Thought${durationPart || ' briefly'}`
+  }
+
+  const groups = {}
+  for (const t of tools) {
+    const verb = TOOL_VERB[t.name] || '调用'
+    groups[verb] = (groups[verb] || 0) + (t.repeat || 1)
+  }
+  const parts = Object.entries(groups).map(([verb, n]) =>
+    n === 1 ? verb : `${verb} ${n} 次`
+  )
+  return `Thought${durationPart} · ${parts.join(', ')}`
+}
+
+/** 单步行标题：Ran 检索法律知识库 (1.3s) */
+export function thoughtStepTitle(step) {
+  if (!step) return '步骤'
+  const label = step.label || step.name || '步骤'
+  if (step.type === 'tool') {
+    const prefix = step.status === 'running' ? 'Running' : 'Ran'
+    return `${prefix} ${label}`
+  }
+  return label
+}
+
+export function thoughtStepDuration(step) {
+  if (step?.durationMs == null) return ''
+  return formatDuration(step.durationMs)
+}

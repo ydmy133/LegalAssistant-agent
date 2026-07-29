@@ -32,6 +32,30 @@
           <el-avatar v-else :size="36" style="background: #409eff">AI</el-avatar>
         </div>
         <div class="message-body">
+          <div
+            v-if="msg.role === 'assistant' && msg.thoughtSteps?.length"
+            class="thought-panel"
+          >
+            <button
+              type="button"
+              class="thought-toggle"
+              @click="msg.showThought = !msg.showThought"
+            >
+              <span class="thought-chevron">{{ msg.showThought ? '▾' : '▸' }}</span>
+              <span>{{ thoughtLabel(msg.thoughtSteps, false, msg.timing?.totalMs ?? msg.durationMs) }}</span>
+            </button>
+            <ol v-if="msg.showThought" class="thought-steps">
+              <li v-for="(step, si) in msg.thoughtSteps" :key="si" :class="[step.type, step.status]">
+                <div class="thought-step-label">
+                  <span class="thought-step-verb">{{ thoughtStepTitle(step) }}</span>
+                  <span v-if="step.repeat > 1" class="thought-repeat">×{{ step.repeat }}</span>
+                  <span v-if="thoughtStepDuration(step)" class="thought-step-ms">{{ thoughtStepDuration(step) }}</span>
+                </div>
+                <div v-if="step.query" class="thought-step-query">{{ step.type === 'tool' ? '' : '查询：' }}{{ step.query }}</div>
+                <div v-if="step.detail" class="thought-step-detail">{{ step.detail }}</div>
+              </li>
+            </ol>
+          </div>
           <div class="message-content" v-html="formatContent(msg.content)"></div>
           <div v-if="msg.role === 'assistant' && (msg.durationMs || msg.timing)" class="message-meta">
             <div class="timing-summary">
@@ -64,9 +88,37 @@
           <el-avatar :size="36" style="background: #409eff">AI</el-avatar>
         </div>
         <div class="message-body">
-          <div class="message-content" v-html="formatContent(streamContent)"></div>
+          <div class="thought-panel live">
+            <button
+              type="button"
+              class="thought-toggle"
+              @click="showLiveThought = !showLiveThought"
+            >
+              <span class="thought-chevron">{{ showLiveThought ? '▾' : '▸' }}</span>
+              <span class="thought-live-label">{{ thoughtLabel(streamThoughtSteps, true, elapsedMs) }}</span>
+            </button>
+            <ol v-if="showLiveThought" class="thought-steps">
+              <li v-for="(step, si) in streamThoughtSteps" :key="si" :class="[step.type, step.status]">
+                <div class="thought-step-label">
+                  <span class="thought-step-verb">{{ thoughtStepTitle(step) }}</span>
+                  <span v-if="step.repeat > 1" class="thought-repeat">×{{ step.repeat }}</span>
+                  <span v-if="thoughtStepDuration(step)" class="thought-step-ms">{{ thoughtStepDuration(step) }}</span>
+                </div>
+                <div v-if="step.query" class="thought-step-query">{{ step.query }}</div>
+                <div v-if="step.detail" class="thought-step-detail">{{ step.detail }}</div>
+              </li>
+              <li v-if="!streamThoughtSteps.length" class="status">
+                <div class="thought-step-label">分析问题</div>
+                <div class="thought-step-detail">正在理解问题…</div>
+              </li>
+            </ol>
+          </div>
+          <div
+            v-if="streamContent"
+            class="message-content"
+            v-html="formatContent(streamContent)"
+          ></div>
           <div class="message-meta streaming-meta">
-            <span v-if="!streamContent" class="thinking">思考中</span>
             <span>{{ formatDuration(elapsedMs) }}</span>
           </div>
         </div>
@@ -75,21 +127,51 @@
 
     <!-- Input area -->
     <div class="input-area">
-      <el-input
-        v-model="input"
-        type="textarea"
-        :rows="2"
-        placeholder="输入法律问题..."
-        @keydown.enter.exact="handleSend"
-        resize="none"
-      />
-      <div class="input-actions">
-        <el-button @click="uploadVisible = true" :icon="Upload">
-          上传文档
-        </el-button>
-        <el-button type="primary" @click="handleSend" :loading="sending" :disabled="!input.trim()">
-          发送
-        </el-button>
+      <div class="composer">
+        <el-input
+          v-model="input"
+          type="textarea"
+          :rows="2"
+          placeholder="输入法律问题..."
+          @keydown.enter.exact.prevent="handleSend"
+          resize="none"
+          :disabled="sending"
+        />
+        <div class="composer-actions">
+          <el-button class="upload-btn" text @click="uploadVisible = true" :icon="Upload" title="上传文档">
+            上传
+          </el-button>
+          <button
+            v-if="!sending"
+            type="button"
+            class="icon-action-btn send-btn"
+            :disabled="!input.trim()"
+            title="发送"
+            aria-label="发送"
+            @click="handleSend"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <path
+                d="M12 19V5M12 5l-5.5 5.5M12 5l5.5 5.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+          <button
+            v-else
+            type="button"
+            class="icon-action-btn stop-btn"
+            title="暂停生成"
+            aria-label="暂停生成"
+            @click="handleStop"
+          >
+            <span class="stop-square" aria-hidden="true"></span>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -127,7 +209,7 @@ import { UserFilled, Upload, UploadFilled } from '@element-plus/icons-vue'
 import { sendMessageStream, getMessages, newSession } from '../api/chat'
 import { getModelConfigs } from '../api/modelConfig'
 import { uploadDocument } from '../api/document'
-import { formatMessage, formatDuration, formatTimingDetails } from '../utils/formatMessage'
+import { formatMessage, formatDuration, formatTimingDetails, thoughtSummaryLabel, extractThoughtSteps, thoughtStepTitle, thoughtStepDuration } from '../utils/formatMessage'
 
 const route = useRoute()
 const router = useRouter()
@@ -141,11 +223,20 @@ const input = ref('')
 const sending = ref(false)
 const streaming = ref(false)
 const streamContent = ref('')
+const streamThoughtSteps = ref([])
+const showLiveThought = ref(true)
 const elapsedMs = ref(0)
 const messagesRef = ref(null)
 
 let streamTimer = null
 let streamStartAt = 0
+let activeAbortController = null
+
+const handleStop = () => {
+  if (activeAbortController) {
+    activeAbortController.abort()
+  }
+}
 
 const startElapsedTimer = () => {
   streamStartAt = Date.now()
@@ -191,14 +282,18 @@ const loadMessages = async (sessionId) => {
   try {
     const res = await getMessages(sessionId)
     messages.value = (res.data.records || []).map(m => {
+      const rawMeta = m?.metadataJson ?? m?.metadata_json
       const timing = extractStoredTiming(m)
+      const thoughtSteps = extractThoughtSteps(rawMeta)
       return {
         id: m.id,
         role: m.role,
         content: m.content,
         timing,
+        thoughtSteps,
         durationMs: timing?.totalMs ?? null,
         showTiming: false,
+        showThought: false,
       }
     })
     scrollBottom()
@@ -233,12 +328,19 @@ const handleSend = async () => {
   sending.value = true
   streaming.value = true
   streamContent.value = ''
+  streamThoughtSteps.value = []
+  showLiveThought.value = true
   startElapsedTimer()
   await nextTick()
   scrollBottom()
 
+  const abortController = new AbortController()
+  activeAbortController = abortController
+
   let durationMs = 0
   let timing = null
+  let thoughtSteps = []
+  let aborted = false
   try {
     const result = await sendMessageStream(
       {
@@ -247,6 +349,7 @@ const handleSend = async () => {
         modelConfigId: selectedModelId.value,
       },
       {
+        signal: abortController.signal,
         onChunk: (_chunk, accumulated) => {
           streamContent.value = accumulated
           scrollBottom()
@@ -254,28 +357,53 @@ const handleSend = async () => {
         onTiming: (t) => {
           timing = t
         },
+        onEvent: (_event, steps) => {
+          streamThoughtSteps.value = [...steps]
+          scrollBottom()
+        },
       }
     )
     const full = typeof result === 'string' ? result : result?.content
     timing = timing || (typeof result === 'object' ? result?.timing : null)
+    thoughtSteps = (typeof result === 'object' ? result?.thoughtSteps : null) || streamThoughtSteps.value || []
+    aborted = !!(typeof result === 'object' && result?.aborted)
     const clientMs = finishElapsed()
     durationMs = timing?.totalMs ?? clientMs
+    const answer = full || streamContent.value
     messages.value.push({
       role: 'assistant',
-      content: full || streamContent.value || '（无回复）',
+      content: answer
+        ? (aborted ? `${answer}\n\n（已暂停生成）` : answer)
+        : (aborted ? '（已暂停生成）' : '（无回复）'),
       durationMs,
       timing,
-      showTiming: true,
+      thoughtSteps,
+      showTiming: false,
+      showThought: false,
     })
-  } catch {
+  } catch (err) {
     durationMs = finishElapsed()
+    thoughtSteps = streamThoughtSteps.value || []
+    aborted = abortController.signal.aborted || err?.name === 'AbortError'
     if (streamContent.value) {
       messages.value.push({
         role: 'assistant',
-        content: streamContent.value,
+        content: aborted ? `${streamContent.value}\n\n（已暂停生成）` : streamContent.value,
         durationMs,
         timing,
+        thoughtSteps,
         showTiming: !!timing,
+        showThought: false,
+      })
+    } else if (aborted) {
+      messages.value.push({
+        role: 'assistant',
+        content: '（已暂停生成）',
+        durationMs,
+        timing,
+        thoughtSteps,
+        showTiming: !!timing,
+        showThought: thoughtSteps.length > 0,
       })
     } else {
       messages.value.push({
@@ -283,13 +411,19 @@ const handleSend = async () => {
         content: '抱歉，请求失败，请稍后重试。',
         durationMs,
         timing,
+        thoughtSteps,
         showTiming: !!timing,
+        showThought: thoughtSteps.length > 0,
       })
     }
   } finally {
+    if (activeAbortController === abortController) {
+      activeAbortController = null
+    }
     stopElapsedTimer()
     streaming.value = false
     streamContent.value = ''
+    streamThoughtSteps.value = []
     elapsedMs.value = 0
     sending.value = false
     await nextTick()
@@ -319,6 +453,9 @@ const handleUpload = async () => {
 
 const formatContent = formatMessage
 
+const thoughtLabel = (steps, streaming, totalMs) =>
+  thoughtSummaryLabel(steps, { streaming: !!streaming, totalMs: totalMs ?? null })
+
 const scrollBottom = () => {
   nextTick(() => {
     const el = messagesRef.value
@@ -343,6 +480,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopElapsedTimer()
+  if (activeAbortController) {
+    activeAbortController.abort()
+    activeAbortController = null
+  }
 })
 </script>
 
@@ -464,8 +605,107 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
 }
-.thinking {
-  color: #409eff;
+.thought-panel {
+  margin-bottom: 6px;
+  max-width: 560px;
+}
+.thought-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 0;
+  line-height: 1.4;
+}
+.thought-toggle:hover {
+  color: #374151;
+}
+.thought-chevron {
+  font-size: 11px;
+  width: 12px;
+  display: inline-block;
+}
+.thought-live-label {
+  color: #6b7280;
+  font-style: italic;
+}
+.thought-panel.live .thought-live-label {
+  animation: thoughtPulse 1.4s ease-in-out infinite;
+}
+@keyframes thoughtPulse {
+  0%, 100% { opacity: 0.65; }
+  50% { opacity: 1; }
+}
+.thought-steps {
+  list-style: none;
+  margin: 6px 0 8px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.thought-steps li {
+  padding-left: 10px;
+  border-left: 2px solid #d1d5db;
+}
+.thought-steps li.tool {
+  border-left-color: #3b82f6;
+}
+.thought-steps li.status {
+  border-left-color: #9ca3af;
+}
+.thought-step-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.thought-step-verb {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.thought-step-ms {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 500;
+  color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+}
+.thought-steps li.running .thought-step-verb {
+  color: #2563eb;
+}
+.thought-steps li.done .thought-step-verb {
+  color: #374151;
+}
+.thought-repeat {
+  font-size: 11px;
+  font-weight: 500;
+  color: #9ca3af;
+}
+.thought-step-query {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #2563eb;
+  word-break: break-word;
+}
+.thought-step-detail {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.5;
+  word-break: break-word;
+  white-space: pre-wrap;
 }
 .message-content {
   padding: 12px 16px;
@@ -490,10 +730,63 @@ onUnmounted(() => {
   background: #fff;
   border-top: 1px solid #e4e7ed;
 }
-.input-actions {
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.composer :deep(.el-textarea__inner) {
+  border-radius: 12px;
+  padding-right: 12px;
+  box-shadow: none;
+}
+.composer-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 10px;
+  align-items: center;
+  gap: 10px;
+}
+.upload-btn {
+  color: #606266;
+}
+.icon-action-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.12s ease, opacity 0.12s ease, background 0.12s ease;
+}
+.icon-action-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+.send-btn {
+  background: #111;
+  color: #fff;
+}
+.send-btn:hover:not(:disabled) {
+  background: #000;
+}
+.send-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.stop-btn {
+  background: #111;
+  color: #fff;
+}
+.stop-btn:hover {
+  background: #000;
+}
+.stop-square {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #fff;
+  display: block;
 }
 </style>
