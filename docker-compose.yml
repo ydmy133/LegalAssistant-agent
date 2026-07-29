@@ -84,6 +84,17 @@ services:
       ollama-init:
         condition: service_completed_successfully
 
+  searxng:
+    image: searxng/searxng:latest
+    container_name: legal-searxng
+    restart: unless-stopped
+    ports:
+      - "8088:8080"
+    volumes:
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8088/
+
   backend:
     build:
       context: .
@@ -99,6 +110,8 @@ services:
       LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY:-change-me-lightrag-api-key}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-your-api-key}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-true}
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
       FILE_UPLOAD_DIR: /app/uploads
     ports:
       - "8080:8080"
@@ -106,6 +119,7 @@ services:
       - mysql
       - redis
       - lightrag
+      - searxng
     volumes:
       - backend-uploads:/app/uploads
 

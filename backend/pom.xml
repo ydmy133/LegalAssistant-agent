@@ -77,6 +77,13 @@
             <version>${langchain4j.version}</version>
         </dependency>
 
+        <!-- Jsoup: DuckDuckGo HTML 解析 + 网页正文抽取 -->
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+            <version>1.18.1</version>
+        </dependency>
+
         <!-- Lombok -->
         <dependency>
             <groupId>org.projectlombok</groupId>

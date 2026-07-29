@@ -93,3 +93,23 @@ legal:
     max-segments: ${LIGHTRAG_MAX_SEGMENTS:16}
     # 拉长进程内缓存，避免隔几分钟复测又走 ~8s 冷路径；键按语义关键词归一
     query-cache-ttl-seconds: ${LIGHTRAG_QUERY_CACHE_TTL:600}
+  web-search:
+    enabled: ${WEB_SEARCH_ENABLED:true}
+    provider: searxng
+    searxng-base-url: ${SEARXNG_BASE_URL:http://localhost:8088}
+    max-results: 5
+    timeout-seconds: 15
+    fetch-timeout-seconds: 10
+    max-fetch-pages: 3
+    max-content-chars: 3000
+    user-agent: LegalAssistantBot/1.0
+    prefer-include-domains: true
+    include-domains: gov.cn,court.gov.cn,moj.gov.cn,12348.gov.cn
+    auto-fallback: true
+    curated-fallback: true
+    max-fused-segments: ${WEB_SEARCH_MAX_FUSED_SEGMENTS:16}
+    min-local-chars: 200
+    source-weights:
+      local: 1.0
+      gov: 0.90
+      web: 0.65
