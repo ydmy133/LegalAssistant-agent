@@ -22,10 +22,11 @@ export OPENAI_API_KEY="sk-..."
 **Infrastructure** (from repo root):
 ```bash
 cp deploy/lightrag/env.example deploy/lightrag/.env   # fill LLM_BINDING_API_KEY
-docker compose up -d                                    # MySQL + Redis + Ollama + LightRAG
+docker compose up -d                                    # MySQL + Redis + Ollama + LightRAG + SearXNG
 # Ollama 默认 OLLAMA_KEEP_ALIVE=-1（bge-m3 常驻）；若曾手动起过旧容器，需：
 # docker-compose -f docker-compose.yml up -d --force-recreate ollama
 mysql -u root -p123123 < backend/sql/init.sql         # Initialize database tables
+# 联网搜索：WEB_SEARCH_ENABLED=true（默认）；SEARXNG_BASE_URL 本机 http://localhost:8088，compose 内 http://searxng:8080
 ```
 
 ## Architecture
@@ -42,11 +43,13 @@ OpenAI ChatModel (gpt-4o-mini with function calling)
     │  LLM decides WHEN to call tools
     ▼
 @Tool methods in LegalTools (auto-discovered by Spring)
-    ├── searchLegalKnowledge() → RAGService (LightRAGServiceImpl) → LightRAG /query/data
+    ├── searchLegalKnowledge() → RAGService (+ 置信度不足时 WebSearch/SearXNG)
+    ├── searchWeb() → SearXNG + 页面抓取（curated 官文法兜底）
     ├── searchCases() → MySQL legal_case LIKE query
     ├── getCaseDetail() → MySQL legal_case by ID
     └── getConversationHistory() → MySQL message history
 ```
+SessionToolGuard 按会话限制同轮工具次数；Thought 事件只展示短摘要。
 
 **Critical**: `@AiService` discovers `@Tool`-annotated methods on any Spring `@Component`/`@Service` bean automatically. The `@SystemMessage` on the interface tells the LLM what tools are available and when to use them. The `@MemoryId` parameter triggers LangChain4j to maintain a per-session `ChatMemory` (in-memory by default).
 
