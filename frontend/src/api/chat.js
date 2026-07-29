@@ -5,10 +5,15 @@ export function sendMessage(data) {
   return request.post('/chat/send', data)
 }
 
+const TIMING_PREFIX = '[TIMING]'
+
 /**
- * 流式发送消息（SSE）。onChunk 每次收到增量文本时回调；完成后 resolve 完整正文。
+ * 流式发送消息（SSE）。
+ * onChunk: 增量文本
+ * onTiming: 后端分阶段耗时对象
+ * 完成后 resolve { content, timing }
  */
-export async function sendMessageStream(data, { onChunk } = {}) {
+export async function sendMessageStream(data, { onChunk, onTiming } = {}) {
   const token = localStorage.getItem('token')
   const res = await fetch('/api/chat/stream', {
     method: 'POST',
@@ -41,11 +46,21 @@ export async function sendMessageStream(data, { onChunk } = {}) {
   const decoder = new TextDecoder()
   let buffer = ''
   let full = ''
+  let timing = null
 
   const consumeEvents = (events) => {
     for (const payload of events) {
       if (payload === '[DONE]') {
         return true
+      }
+      if (payload.startsWith(TIMING_PREFIX)) {
+        try {
+          timing = JSON.parse(payload.slice(TIMING_PREFIX.length))
+          onTiming?.(timing)
+        } catch (e) {
+          console.warn('Failed to parse timing payload', e)
+        }
+        continue
       }
       full += payload
       onChunk?.(payload, full)
@@ -61,19 +76,18 @@ export async function sendMessageStream(data, { onChunk } = {}) {
     const parsed = parseSseBuffer(buffer)
     buffer = parsed.remaining
     if (consumeEvents(parsed.events)) {
-      return full
+      return { content: full, timing }
     }
   }
 
-  // 流结束：处理剩余缓冲区（可能没有结尾空行）
   if (buffer.trim()) {
     const parsed = parseSseBuffer(buffer + '\n\n')
     if (consumeEvents(parsed.events)) {
-      return full
+      return { content: full, timing }
     }
   }
 
-  return full
+  return { content: full, timing }
 }
 
 export function getSessions(page = 1, size = 20) {

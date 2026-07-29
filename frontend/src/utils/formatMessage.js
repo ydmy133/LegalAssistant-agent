@@ -25,6 +25,60 @@ export function formatDuration(ms) {
 }
 
 /**
+ * 将后端 timing 对象格式化为可读明细行
+ */
+export function formatTimingDetails(timing) {
+  if (!timing || typeof timing !== 'object') return []
+
+  const lines = []
+  const total = timing.totalMs ?? timing.durationMs
+  if (total != null) {
+    lines.push({ label: '总耗时', value: formatDuration(total), level: 0, emphasize: true })
+  }
+  if (timing.model) {
+    lines.push({ label: '模型', value: timing.model, level: 0 })
+  }
+  if (timing.tokens) {
+    const { input, output } = timing.tokens
+    const parts = []
+    if (input != null) parts.push(`入 ${input}`)
+    if (output != null) parts.push(`出 ${output}`)
+    if (parts.length) {
+      lines.push({ label: 'Tokens', value: parts.join(' / '), level: 0 })
+    }
+  }
+
+  const derived = timing.derived || {}
+  for (const [key, value] of Object.entries(derived)) {
+    lines.push({ label: key, value: formatDuration(value), level: 0 })
+  }
+
+  const pushStage = (stage, level) => {
+    if (!stage) return
+    const detail = stage.detail ? `（${stage.detail}）` : ''
+    lines.push({
+      label: `${stage.name}${detail}`,
+      value: formatDuration(stage.durationMs),
+      level,
+      offsetMs: stage.offsetMs,
+    })
+    if (Array.isArray(stage.children)) {
+      for (const child of stage.children) {
+        pushStage(child, level + 1)
+      }
+    }
+  }
+
+  if (Array.isArray(timing.stages)) {
+    for (const stage of timing.stages) {
+      pushStage(stage, 0)
+    }
+  }
+
+  return lines
+}
+
+/**
  * 按 SSE 规范解析缓冲区：多行 data 用 \n 拼接，避免正文换行被误拆事件。
  * @returns {{ events: string[], remaining: string }}
  */

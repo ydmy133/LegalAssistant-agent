@@ -33,8 +33,29 @@
         </div>
         <div class="message-body">
           <div class="message-content" v-html="formatContent(msg.content)"></div>
-          <div v-if="msg.role === 'assistant' && msg.durationMs" class="message-meta">
-            耗时 {{ formatDuration(msg.durationMs) }}
+          <div v-if="msg.role === 'assistant' && (msg.durationMs || msg.timing)" class="message-meta">
+            <div class="timing-summary">
+              耗时 {{ formatDuration(msg.timing?.totalMs ?? msg.durationMs) }}
+              <button
+                v-if="msg.timing"
+                type="button"
+                class="timing-toggle"
+                @click="msg.showTiming = !msg.showTiming"
+              >
+                {{ msg.showTiming ? '收起明细' : '查看明细' }}
+              </button>
+            </div>
+            <ul v-if="msg.showTiming && msg.timing" class="timing-details">
+              <li
+                v-for="(line, i) in formatTimingDetails(msg.timing)"
+                :key="i"
+                :class="{ emphasize: line.emphasize }"
+                :style="{ paddingLeft: (line.level || 0) * 12 + 'px' }"
+              >
+                <span class="timing-label">{{ line.label }}</span>
+                <span class="timing-value">{{ line.value }}</span>
+              </li>
+            </ul>
           </div>
         </div>
       </div>
@@ -106,7 +127,7 @@ import { UserFilled, Upload, UploadFilled } from '@element-plus/icons-vue'
 import { sendMessageStream, getMessages, newSession } from '../api/chat'
 import { getModelConfigs } from '../api/modelConfig'
 import { uploadDocument } from '../api/document'
-import { formatMessage, formatDuration } from '../utils/formatMessage'
+import { formatMessage, formatDuration, formatTimingDetails } from '../utils/formatMessage'
 
 const route = useRoute()
 const router = useRouter()
@@ -198,8 +219,9 @@ const handleSend = async () => {
   scrollBottom()
 
   let durationMs = 0
+  let timing = null
   try {
-    const full = await sendMessageStream(
+    const result = await sendMessageStream(
       {
         sessionId,
         content,
@@ -210,23 +232,39 @@ const handleSend = async () => {
           streamContent.value = accumulated
           scrollBottom()
         },
+        onTiming: (t) => {
+          timing = t
+        },
       }
     )
-    durationMs = finishElapsed()
+    const full = typeof result === 'string' ? result : result?.content
+    timing = timing || (typeof result === 'object' ? result?.timing : null)
+    const clientMs = finishElapsed()
+    durationMs = timing?.totalMs ?? clientMs
     messages.value.push({
       role: 'assistant',
       content: full || streamContent.value || '（无回复）',
       durationMs,
+      timing,
+      showTiming: true,
     })
   } catch {
     durationMs = finishElapsed()
     if (streamContent.value) {
-      messages.value.push({ role: 'assistant', content: streamContent.value, durationMs })
+      messages.value.push({
+        role: 'assistant',
+        content: streamContent.value,
+        durationMs,
+        timing,
+        showTiming: !!timing,
+      })
     } else {
       messages.value.push({
         role: 'assistant',
         content: '抱歉，请求失败，请稍后重试。',
         durationMs,
+        timing,
+        showTiming: !!timing,
       })
     }
   } finally {
@@ -350,6 +388,54 @@ onUnmounted(() => {
   color: #909399;
   padding: 0 4px;
   line-height: 1.4;
+}
+.timing-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.timing-toggle {
+  border: none;
+  background: transparent;
+  color: #409eff;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+.timing-toggle:hover {
+  text-decoration: underline;
+}
+.timing-details {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: #fafafa;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  max-width: 520px;
+}
+.timing-details li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #606266;
+}
+.timing-details li.emphasize {
+  color: #303133;
+  font-weight: 600;
+}
+.timing-label {
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+}
+.timing-value {
+  flex-shrink: 0;
+  color: #409eff;
 }
 .message.user .message-meta {
   text-align: right;
