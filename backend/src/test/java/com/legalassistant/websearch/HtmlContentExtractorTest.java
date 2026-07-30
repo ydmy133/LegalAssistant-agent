@@ -33,8 +33,9 @@ class HtmlContentExtractorTest {
                 Path.of("src/test/resources/fixtures/article-page.html"),
                 StandardCharsets.UTF_8);
 
-        String text = HtmlContentExtractor.extract(html, 40);
-        assertTrue(text.length() <= 43); // 40 + "..."
-        assertTrue(text.endsWith("..."));
+        String text = HtmlContentExtractor.extract(html, 40, "https://example.gov.cn/x");
+        assertTrue(text.contains("正文已截断至 40 字"));
+        assertTrue(text.contains("https://example.gov.cn/x"));
+        assertTrue(text.contains("..."));
     }
 }

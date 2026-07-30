@@ -9,6 +9,7 @@ import com.legalassistant.timing.ChatTimingRegistry;
 import com.legalassistant.websearch.CuratedLegalWebFallback;
 import com.legalassistant.websearch.HtmlContentExtractor;
 import com.legalassistant.websearch.SearxSearchClient;
+import com.legalassistant.websearch.UrlSafety;
 import lombok.extern.slf4j.Slf4j;
 import org.jsoup.Connection;
 import org.jsoup.Jsoup;
@@ -242,8 +243,9 @@ public class SelfHostedWebSearchServiceImpl implements WebSearchService {
 
     private WebSearchHit fetchOne(WebSearchHit hit) {
         try {
+            UrlSafety.assertSafePublicHttpUrl(hit.getUrl());
             String html = pageFetcher.fetchPageHtml(hit.getUrl());
-            String content = HtmlContentExtractor.extract(html, properties.getMaxContentChars());
+            String content = HtmlContentExtractor.extract(html, properties.getMaxContentChars(), hit.getUrl());
             if (content == null || content.isBlank()) {
                 content = hit.getSnippet();
             }
@@ -320,6 +322,7 @@ public class SelfHostedWebSearchServiceImpl implements WebSearchService {
 
         @Override
         public String fetchPageHtml(String url) {
+            UrlSafety.assertSafePublicHttpUrl(url);
             try {
                 Connection.Response response = Jsoup.connect(url)
                         .userAgent(properties.getUserAgent())

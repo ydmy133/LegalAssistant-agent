@@ -86,6 +86,7 @@ public class CuratedLegalWebFallback {
 
     private String fetchContent(String url) {
         try {
+            UrlSafety.assertSafePublicHttpUrl(url);
             Connection.Response response = Jsoup.connect(url)
                     .userAgent(properties.getUserAgent())
                     .timeout(properties.getFetchTimeoutSeconds() * 1000)
@@ -97,7 +98,7 @@ public class CuratedLegalWebFallback {
                 log.debug("Curated fetch HTTP {} for {}", response.statusCode(), url);
                 return null;
             }
-            return HtmlContentExtractor.extract(response.body(), properties.getMaxContentChars());
+            return HtmlContentExtractor.extract(response.body(), properties.getMaxContentChars(), url);
         } catch (Exception e) {
             log.debug("Curated fetch failed for {}: {}", url, e.getMessage());
             return null;

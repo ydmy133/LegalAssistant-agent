@@ -25,6 +25,10 @@ public final class HtmlContentExtractor {
     }
 
     public static String extract(String html, int maxChars) {
+        return extract(html, maxChars, null);
+    }
+
+    public static String extract(String html, int maxChars, String sourceUrl) {
         if (html == null || html.isBlank()) {
             return "";
         }
@@ -50,7 +54,10 @@ public final class HtmlContentExtractor {
                 .replaceAll("\\n{3,}", "\n\n")
                 .trim();
         if (maxChars > 0 && text.length() > maxChars) {
-            return text.substring(0, maxChars) + "...";
+            String footer = sourceUrl != null && !sourceUrl.isBlank()
+                    ? "（正文已截断至 " + maxChars + " 字，详见 " + sourceUrl + "）"
+                    : "（正文已截断至 " + maxChars + " 字）";
+            return text.substring(0, maxChars) + "..." + footer;
         }
         return text;
     }
