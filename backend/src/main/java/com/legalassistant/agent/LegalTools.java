@@ -18,6 +18,7 @@ import com.legalassistant.service.impl.SelfHostedWebSearchServiceImpl;
 import com.legalassistant.timing.ChatTiming;
 import com.legalassistant.timing.ChatTimingRegistry;
 import com.legalassistant.timing.ThoughtEventBus;
+import com.legalassistant.timing.ToolCallContext;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolMemoryId;
@@ -57,11 +58,11 @@ public class LegalTools {
             @ToolMemoryId String sessionId,
             @P("检索关键词或完整问题（优先一次写全）") String query) {
         log.info("Tool: searchLegalKnowledge called with query='{}'", query);
-        String blocked = sessionToolGuard.check(sessionId, "searchLegalKnowledge");
+        String blocked = sessionToolGuard.check(sessionId, "searchLegalKnowledge", query);
         if (blocked != null) {
             return blocked;
         }
-        sessionToolGuard.record(sessionId, "searchLegalKnowledge");
+        sessionToolGuard.record(sessionId, "searchLegalKnowledge", query);
         ChatTiming.Stage stage = beginTool(sessionId, "searchLegalKnowledge",
                 truncate(query, 80));
         try {
@@ -73,6 +74,7 @@ public class LegalTools {
             if (confidenceEvaluator.needsWebFallback(localOutcome)) {
                 webFallback = true;
                 List<WebSearchHit> webHits = webSearchService.search(query);
+                noteWebOutcome(sessionId, webHits);
                 knowledge = knowledgeFusionService.fuse(query, localOutcome, webHits);
                 fusedSegments = countFormattedSegments(knowledge);
             } else if (localOutcome.getSegments() != null && !localOutcome.getSegments().isEmpty()) {
@@ -103,6 +105,7 @@ public class LegalTools {
             if (confidenceEvaluator.needsWebFallback(fallbackOutcome)) {
                 webFallback = true;
                 List<WebSearchHit> webHits = webSearchService.search(query);
+                noteWebOutcome(sessionId, webHits);
                 knowledge = knowledgeFusionService.fuse(query, fallbackOutcome, webHits);
                 fusedSegments = countFormattedSegments(knowledge);
             } else {
@@ -123,23 +126,25 @@ public class LegalTools {
         }
     }
 
-    @Tool("联网检索官方法律信息。仅当本地库明显不足或用户问最新/修订/某地规定时调用；本轮最多2次，禁止换词连搜。返回含 URL 的短摘要。")
+    @Tool("联网检索官方法律信息。仅当本地库明显不足或用户问最新/修订/某地规定时调用；默认本轮最多1次，空结果后可换不同意图再试1次，禁止同词重搜。返回含 URL 的短摘要。")
     public String searchWeb(
             @ToolMemoryId String sessionId,
             @P("检索关键词或完整问题") String query) {
         log.info("Tool: searchWeb called with query='{}'", query);
-        String blocked = sessionToolGuard.check(sessionId, "searchWeb");
+        String blocked = sessionToolGuard.check(sessionId, "searchWeb", query);
         if (blocked != null) {
             return blocked;
         }
-        sessionToolGuard.record(sessionId, "searchWeb");
+        sessionToolGuard.record(sessionId, "searchWeb", query);
         ChatTiming.Stage stage = beginTool(sessionId, "searchWeb", truncate(query, 80));
         try {
             if (!webSearchService.isAvailable()) {
+                sessionToolGuard.markWebExhausted(sessionId);
                 endTool(stage, "disabled");
                 return "联网搜索未启用（请设置 WEB_SEARCH_ENABLED=true），无法检索。";
             }
             List<WebSearchHit> hits = webSearchService.search(query);
+            noteWebOutcome(sessionId, hits);
             String reason = null;
             if (webSearchService instanceof SelfHostedWebSearchServiceImpl selfHosted) {
                 reason = selfHosted.lastErrorReason();
@@ -151,6 +156,14 @@ public class LegalTools {
         } catch (RuntimeException e) {
             endTool(stage, "error=" + e.getMessage());
             throw e;
+        }
+    }
+
+    private void noteWebOutcome(String sessionId, List<WebSearchHit> hits) {
+        if (hits != null && !hits.isEmpty()) {
+            sessionToolGuard.markWebHadHits(sessionId);
+        } else {
+            sessionToolGuard.markWebEmpty(sessionId);
         }
     }
 
@@ -241,11 +254,11 @@ public class LegalTools {
             @ToolMemoryId String sessionId,
             @P("案由或短关键词（如：未签劳动合同、双倍工资）；可用空格分隔多个词") String keyword) {
         log.info("Tool: searchCases called with keyword='{}'", keyword);
-        String blocked = sessionToolGuard.check(sessionId, "searchCases");
+        String blocked = sessionToolGuard.check(sessionId, "searchCases", keyword);
         if (blocked != null) {
             return blocked;
         }
-        sessionToolGuard.record(sessionId, "searchCases");
+        sessionToolGuard.record(sessionId, "searchCases", keyword);
         ChatTiming.Stage stage = beginTool(sessionId, "searchCases", truncate(keyword, 80));
         try {
             List<LegalCase> cases = searchCasesByKeyword(keyword);
@@ -395,11 +408,11 @@ public class LegalTools {
             @ToolMemoryId String sessionId,
             @P("案件ID") Long caseId) {
         log.info("Tool: getCaseDetail called with caseId={}", caseId);
-        String blocked = sessionToolGuard.check(sessionId, "getCaseDetail");
+        String blocked = sessionToolGuard.check(sessionId, "getCaseDetail", String.valueOf(caseId));
         if (blocked != null) {
             return blocked;
         }
-        sessionToolGuard.record(sessionId, "getCaseDetail");
+        sessionToolGuard.record(sessionId, "getCaseDetail", String.valueOf(caseId));
         ChatTiming.Stage stage = beginTool(sessionId, "getCaseDetail", "caseId=" + caseId);
         try {
             LegalCase c = caseMapper.selectById(caseId);
@@ -440,11 +453,11 @@ public class LegalTools {
                 : memoryId;
         log.info("Tool: getConversationHistory called with sessionId='{}' (resolved='{}')",
                 sessionId, resolvedSession);
-        String blocked = sessionToolGuard.check(memoryId, "getConversationHistory");
+        String blocked = sessionToolGuard.check(memoryId, "getConversationHistory", resolvedSession);
         if (blocked != null) {
             return blocked;
         }
-        sessionToolGuard.record(memoryId, "getConversationHistory");
+        sessionToolGuard.record(memoryId, "getConversationHistory", resolvedSession);
         ChatTiming.Stage stage = beginTool(memoryId, "getConversationHistory", truncate(resolvedSession, 40));
         try {
             Long conversationId = resolveConversationId(resolvedSession);
@@ -492,9 +505,13 @@ public class LegalTools {
         ChatTimingRegistry.bind(sessionId);
         ThoughtEventBus.bindSession(sessionId);
         ChatTiming timing = resolveTiming(sessionId);
+        int seq = sessionToolGuard.nextCallSeq(sessionId, toolName);
+        String callId = toolName + "#" + seq;
+        ToolCallContext.setCallId(callId);
         Map<String, Object> running = new LinkedHashMap<>();
         running.put("type", "tool");
         running.put("name", toolName);
+        running.put("callId", callId);
         running.put("label", toolLabel(toolName));
         running.put("status", "running");
         if (detail != null && !detail.isBlank()) {
@@ -517,6 +534,7 @@ public class LegalTools {
             timing.markToolEnded();
         }
         ChatTimingRegistry.setCurrentStage(null);
+        // callId 保留到 ChatServiceImpl.onToolExecuted 读取后再 clear
     }
 
     private static String toolLabel(String toolName) {
