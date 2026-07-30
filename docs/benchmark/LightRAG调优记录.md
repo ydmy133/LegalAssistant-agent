@@ -55,6 +55,7 @@
 | **T009** | 2026-07-29 | 语义缓存+TTL600+预热+Ollama常驻；禁第38条过度推断；timing 入库 | **标准 14.5 s** / 详细 **36.0 s** | **97 / 97** | 用户前端 + 人工评 | 会话 `05094198`；queryData **1.0s** / 详细追问 **cacheHit**；耗时可回显；第38条误区专节澄清 |
 | **T010** | 2026-07-29 | SearXNG + curated 兜底 + 置信度门控 + SessionToolGuard（联网开） | **标准 10.3 s** / 详细 **11.5 s** | **97 / 97** | 用户前端 + 人工评 | 会话 `7ee7ad19`；`webFallback=false`；工具 1 次；见 §5f |
 | **T011** | 2026-07-29 | Cursor 式 Thought 步骤 + T010 栈复测（含抖音联网） | **标准 9.6 s** / 详细 **23.3 s** / 抖音 **40.0 s** | **95 / 98 / 95** | 用户前端 + 人工评 | 会话 `da8fb073`；见 §5g；SearXNG 命中指导性案例239 |
+| **T012** | 2026-07-30 | 吸取 grok-build：指纹防抖 + Thought callId + SSRF/截断 + 分节 Prompt；前端复测（含引用芯片） | **标准 11.3 s** / 详细 **13.3 s** / 抖音 **31.0 s** | **95 / 96 / 96** | 用户前端 + 人工评 | 会话 `bf283394`；见 §5h.5；`searchWeb`×1（相对 T011×2）；正文 Markdown 链接 |
 
 ---
 
@@ -743,7 +744,8 @@ T009 落地后的用户前端复测：标准问 +「帮我生成一份详细回�
 | T009 | 压低 queryData；禁第38条过度推断；耗时入库可回显 | 热路径~1s；cacheHit；刷新仍显示耗时 | **已完成（前端 14.5s/97；详细 36.0s/97）** |
 | T010 | SearXNG 元搜索 + Jsoup 抓取 + curated 兜底 + 置信度门控 + KnowledgeFusion + SessionToolGuard | Q-LABOR-001 回归 ≥97 且不滥触发 webFallback；Q-WEB-001/002 含 URL；同轮工具不重复轰炸 | **回归已测（§5f）**；联网题见 §5g 抖音轮 |
 | T011 | Cursor 式 Thought（回顾上文/跳过检索/Ran 工具）+ T010 复测 | Thought 续写步骤可读；标准问耗时/准确度不回退；联网题含 URL | **已测（§5g）** |
-| 后续 | 压详细长答流式；同名工具 Thought 勿覆盖；补测 Q-WEB-001/002 标准题 | 前端复测 | 待办 |
+| T012 | grok-build harness：指纹防抖、callId Thought、Fetch SSRF、分节 Prompt | 同意图拒重搜；Thought 可见每次 searchWeb；拒私网抓取 | **已实现 + 前端复测（§5h.5）** |
+| 后续 | 压详细长答流式；补测 Q-WEB-001/002 标准题 | 前端复测 | 部分完成（抖音类已测） |
 
 ---
 
@@ -944,4 +946,135 @@ Cursor 式 Thought 落地后的用户前端复测：Q-LABOR-001 标准问 + 详�
 
 ---
 
-*文档版本：v1.13 | 路径：`docs/benchmark/LightRAG调优记录.md` | 对应分支：`lightrag` | 含 T011 §5g*
+## 5h. Tune #T012（吸取 grok-build harness，2026-07-30）
+
+对照 [grok-build](https://github.com/xai-org/grok-build) 的 turn 防抖 / Thought verb-group / web_fetch SSRF，在法律助手侧落地（不做 coding sandbox）。
+
+### 5h.1 变更摘要
+
+| 项 | 实现 |
+|----|------|
+| 同源工具指纹 | `SessionToolGuard`：`toolName + normalize(query)`；同指纹第 2 次直接拒 |
+| searchWeb 额度 | 默认 1；首次空结果允许不同意图再 1 次；有命中或二次空则耗尽 |
+| Thought callId | `searchWeb#1` / `#2` 分行；running→done 仅同 callId 合并 |
+| verb-group 标题 | `Thought for Xs · 检索 1 次, 联网 2 次` |
+| Fetch SSRF | `UrlSafety` 拒 localhost / 私网 / metadata / 非 http(s) |
+| 截断 footer | 正文超限追加「已截断至 N 字，详见 URL」 |
+| System Prompt | `ChatAgent` / `LegalAssistantAgent` 分节：`tool_calling` / `citation` / `output` / `labor_law_notes` |
+
+### 5h.2 单测覆盖
+
+- `SessionToolGuardTest`：同指纹拒、空后异 query 可再试、有命中后拒、耗尽拒
+- `ThoughtStepUpsertTest`：同 callId 合并、不同 callId 分行
+- `UrlSafetyTest` / `HtmlContentExtractorTest`：SSRF 与截断 footer
+
+### 5h.3 建议前端复测清单
+
+1. Q-LABOR-001：工具 ≤1，`webFallback=false`，准确度不回退 — **已通过（§5h.5）**  
+2. 抖音/新业态：`searchWeb` 有命中时默认 1 次；Thought 见 `searchWeb#1` — **已通过**  
+3. 故意空联网后换同词再搜：应返回护栏文案，不再打 SearXNG — 待专项测  
+
+### 5h.4 实现结论（合入时）
+
+实现与单测已合入；端到端耗时/准确度见下节前端复测。
+
+### 5h.5 前端验收（2026-07-30）
+
+T012 + Thought sources / 正文引用芯片落地后的用户前端复测。口径：消息 `metadata_json.timing`（与前端气泡同源）。
+
+#### 元信息
+
+| 项目 | 值 |
+|------|-----|
+| 会话 | `bf283394-f72c-4264-a8b0-8b9706a268ab`（conversation id=31） |
+| 时间 | 2026-07-30 05:29–05:31（UTC）≈ 北京时间 13:29–13:31 |
+| 对话模型 | DeepSeek / `deepseek-v4-flash` |
+| 配置 | `WEB_SEARCH_ENABLED=true`；SearXNG；SessionToolGuard（指纹+searchWeb 默认 1）；Thought callId；正文 `[标题](URL)`→引用芯片 |
+
+#### 三轮耗时对照
+
+| 轮次 | 用户问题 | 总耗时 | Tokens | 工具 | RAG / 联网 | 流式 | 字数 | 截断 |
+|------|----------|--------|--------|------|------------|------|------|------|
+| **#1 标准问** | 未签劳动合同有什么后果？ | **11.3 s** | 入 4593 / 出 829 | **1** | queryData **1.4 s**；`webFallback=false`；casesAttached | **5.0 s** | ≈990 | 否 |
+| **#2 详细追问** | 帮我生成一份详细回答 | **13.3 s** | 入 3916 / 出 1479 | **0** | 无工具（上下文续写） | **11.8 s** | ≈2872 | 否 |
+| **#3 抖音认定** | 抖音上的劳动关系认定 | **31.0 s** | 入 32155 / 出 2109 | **2** | 知识 1.2 s（webFallback=false）+ **searchWeb×1**（4.4 s，SearXNG 2.7s + Fetch 1.7s） | **16.5 s** | ≈3077 | 否 |
+
+##### #1 阶段明细
+
+| 阶段 | 耗时 | detail |
+|------|------|--------|
+| 准备请求 | 42 ms | modelReady |
+| 等待模型首轮 | 2.2 s | → searchLegalKnowledge |
+| tool#1:searchLegalKnowledge | 1.4 s | hits=13, source=lightrag, **webFallback=false**, casesAttached=true |
+| └ LightRAG.queryData | 1.4 s | ok |
+| 工具结束→首字 | 2.8 s | — |
+| 流式生成回复 | 5.0 s | chars=990 |
+
+Thought：`searchLegalKnowledge#1`（`hits=13 · 含判例 · 劳动合同法要点.md`），sources 可展开。
+
+##### #2 阶段明细
+
+| 阶段 | 耗时 | detail |
+|------|------|--------|
+| 等待模型首轮 / 首字 | 1.5 s | 无工具 |
+| 流式生成回复 | **11.8 s** | chars=2872 |
+
+Thought：续写路径（无检索工具）。
+
+##### #3 阶段明细
+
+| 阶段 | 耗时 | detail |
+|------|------|--------|
+| tool#1:searchLegalKnowledge | 1.2 s | hits=14, webFallback=false, casesAttached=true |
+| tool#2:searchWeb | **4.4 s** | SearXNG 2.7 s / Fetch 1.7 s；hits=5 |
+| 流式生成回复 | 16.5 s | chars≈3077 |
+
+Thought：`searchLegalKnowledge#1` + `searchWeb#1`（callId 分行）；有命中后**未**再打第二次 `searchWeb`（相对 T011 的 ×2 / 总工具 3 次改善）。
+
+相对 §5g（T011）：标准问 **9.6→11.3 s**（略回升，仍低于 T009 14.5 s）；详细追问 **23.3→13.3 s**（篇幅更短 ≈2872 字）；抖音 **40.0→31.0 s**（工具 **3→2**，联网单次 4.4 s）。
+
+#### 准确度评分
+
+##### #1 标准问 = **95 / 100**
+
+| 维度 | 得分 | 说明 |
+|------|------|------|
+| 法条正确性 | 29/30 | **第7/10/82/14③**、仲裁时效 **第27条** 正确；未把未签写成第38条随时解除 |
+| 要点完整性 | 24/25 | 时间线表、举证/行政风险、时效齐全 |
+| 细节准确度 | 20/20 | 宽限期、约 **11 个月**上限、起算点清晰 |
+| 判例/来源 | 12/15 | 正文**未写出案号**（虽 casesAttached=true） |
+| 结构与可用性 | 10/10 | 分节+表+小结 |
+| **合计** | **95/100** | 与 T011 标准问持平 |
+
+##### #2 详细追问 = **96 / 100**
+
+| 维度 | 得分 | 说明 |
+|------|------|------|
+| 法条正确性 | 29/30 | 第7/10/82/14③/27 正确；本轮未专节强调「勿仅因未签推断第38条」（略扣） |
+| 要点完整性 | 24/25 | 三阶段、时效、合规建议完整 |
+| 细节准确度 | 20/20 | 宽限期 / 约 11 个月 / 第14条第3款准确 |
+| 判例/来源 | 14/15 | 引用 **(2023)京01民终1234号** |
+| 结构与可用性 | 9/10 | ≈2872 字完整收尾，**未截断** |
+| **合计** | **96/100** | 核心条款稳定；略低于 T011 详细答（98）因第38条约束表述未再现 |
+
+##### #3 抖音劳动关系认定 = **96 / 100**
+
+| 维度 | 得分 | 说明 |
+|------|------|------|
+| 标准/法条正确性 | 28/30 | 劳社部发〔2005〕12号三从属性；指导性案例 **239 号**；强调管理强度/议价权个案判断 |
+| 要点完整性 | 24/25 | MCN/经纪合同 vs 劳动关系、场景对照、双方建议齐全 |
+| 细节准确度 | 19/20 | 实务可操作；未展开「支配性劳动管理」原词 / 人社部 56 号文（可选） |
+| 来源/URL | 15/15 | 正文内联 Markdown：`[来源：指导性案例239号](court.gov.cn/...)` 等，可点引用芯片 |
+| 结构与可用性 | 10/10 | 完整收尾；工具仅 2 次符合 T012 护栏 |
+| **合计** | **96/100** | 联网路径 + **文内引用**验收通过；相对 T011 准确度持平略升、耗时明显下降 |
+
+#### 本节结论
+
+1. **标准问**：耗时 **11.3 s**、准确度 **95**；工具 1 次；`webFallback=false`。  
+2. **详细追问**：耗时 **13.3 s**（优于 T011 23.3 s）、准确度 **96**；无工具续写。  
+3. **抖音联网题**：耗时 **31.0 s**（优于 T011 40.0 s）、准确度 **96**；`searchWeb`×1 + 文内 court.gov.cn 链接。  
+4. **T012 护栏**：有命中后未二次联网；Thought 可见 `searchWeb#1`。  
+
+---
+
+*文档版本：v1.15 | 路径：`docs/benchmark/LightRAG调优记录.md` | 对应分支：`lightrag` | 含 T012 §5h.5 前端验收*
