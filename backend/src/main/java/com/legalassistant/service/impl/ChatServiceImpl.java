@@ -18,6 +18,7 @@ import com.legalassistant.service.ModelService;
 import com.legalassistant.timing.ChatTiming;
 import com.legalassistant.timing.ChatTimingRegistry;
 import com.legalassistant.timing.ThoughtEventBus;
+import com.legalassistant.timing.ToolCallContext;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
@@ -197,14 +198,24 @@ public class ChatServiceImpl implements ChatService {
                         Map<String, Object> step = new LinkedHashMap<>();
                         step.put("type", "tool");
                         step.put("name", toolName);
+                        String callId = ToolCallContext.getCallId();
+                        if (callId == null || callId.isBlank()) {
+                            callId = toolName + "#done";
+                        }
+                        step.put("callId", callId);
                         step.put("label", friendlyToolLabel(toolName));
                         step.put("status", "done");
                         step.put("query", extractToolQuery(arguments));
                         step.put("detail", summarizeToolResult(toolName, result));
+                        List<Map<String, Object>> sources = ToolResultSourceParser.parse(result);
+                        if (!sources.isEmpty()) {
+                            step.put("sources", sources);
+                        }
                         if (toolDuration != null) {
                             step.put("durationMs", toolDuration);
                         }
                         emitEvent(sink, thoughtSteps, step);
+                        ToolCallContext.clear();
                     })
                     .onPartialResponse(partial -> {
                         ChatTimingRegistry.bind(timing);
@@ -287,6 +298,11 @@ public class ChatServiceImpl implements ChatService {
                                 Map<String, Object> meta = new LinkedHashMap<>();
                                 meta.put("timing", timingMap);
                                 meta.put("thoughtSteps", thoughtSteps);
+                                List<Map<String, Object>> allSources =
+                                        ToolResultSourceParser.mergeDedup(thoughtSteps);
+                                if (!allSources.isEmpty()) {
+                                    meta.put("sources", allSources);
+                                }
                                 saveMessage(conv.getId(), "assistant", text,
                                         objectMapper.writeValueAsString(meta));
                             } catch (Exception metaEx) {
@@ -455,21 +471,38 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
-     * 同名工具 running→done 合并为一行（类 Cursor/grok 单工具生命周期）。
+     * 工具步骤按 callId 合并 running→done；status 步骤按 name 合并。
      */
     static void upsertThoughtStep(List<Map<String, Object>> thoughtSteps, Map<String, Object> step) {
         if (thoughtSteps == null || step == null) {
             return;
         }
         String type = String.valueOf(step.getOrDefault("type", ""));
+        if ("tool".equals(type)) {
+            Object callId = step.get("callId");
+            if (callId != null && !String.valueOf(callId).isBlank()) {
+                for (int i = thoughtSteps.size() - 1; i >= 0; i--) {
+                    Map<String, Object> prev = thoughtSteps.get(i);
+                    if (prev != null && "tool".equals(String.valueOf(prev.getOrDefault("type", "")))
+                            && callId.equals(prev.get("callId"))) {
+                        prev.putAll(step);
+                        step.clear();
+                        step.putAll(prev);
+                        return;
+                    }
+                }
+            }
+            thoughtSteps.add(step);
+            return;
+        }
         String name = step.get("name") != null ? String.valueOf(step.get("name")) : null;
-        if (("tool".equals(type) || "status".equals(type)) && name != null && !name.isBlank()) {
+        if ("status".equals(type) && name != null && !name.isBlank()) {
             for (int i = thoughtSteps.size() - 1; i >= 0; i--) {
                 Map<String, Object> prev = thoughtSteps.get(i);
                 if (prev == null) {
                     continue;
                 }
-                if (type.equals(String.valueOf(prev.getOrDefault("type", "")))
+                if ("status".equals(String.valueOf(prev.getOrDefault("type", "")))
                         && name.equals(String.valueOf(prev.getOrDefault("name", "")))) {
                     prev.putAll(step);
                     step.clear();
