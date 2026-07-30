@@ -44,17 +44,49 @@
               <span class="thought-chevron">{{ msg.showThought ? '▾' : '▸' }}</span>
               <span>{{ thoughtLabel(msg.thoughtSteps, false, msg.timing?.totalMs ?? msg.durationMs) }}</span>
             </button>
-            <ol v-if="msg.showThought" class="thought-steps">
-              <li v-for="(step, si) in msg.thoughtSteps" :key="si" :class="[step.type, step.status]">
-                <div class="thought-step-label">
-                  <span class="thought-step-verb">{{ thoughtStepTitle(step) }}</span>
+            <ul v-if="msg.showThought" class="thought-steps">
+              <li
+                v-for="(step, si) in msg.thoughtSteps"
+                :key="si"
+                :class="[step.type, step.status, { expandable: step.type === 'tool' && step.sources?.length }]"
+              >
+                <button
+                  v-if="step.type === 'tool' && step.sources?.length"
+                  type="button"
+                  class="thought-step-row"
+                  @click="step.showSources = !step.showSources"
+                >
+                  <span class="thought-expand">{{ step.showSources ? '▾' : '▸' }}</span>
+                  <span class="thought-step-verb">{{ thoughtStepVerb(step) }}</span>
+                  <span class="thought-step-target">{{ thoughtStepTarget(step) }}</span>
                   <span v-if="step.repeat > 1" class="thought-repeat">×{{ step.repeat }}</span>
-                  <span v-if="thoughtStepDuration(step)" class="thought-step-ms">{{ thoughtStepDuration(step) }}</span>
+                </button>
+                <div v-else class="thought-step-row">
+                  <span class="thought-expand spacer"></span>
+                  <span class="thought-step-verb">{{ thoughtStepVerb(step) }}</span>
+                  <span v-if="thoughtStepTarget(step)" class="thought-step-target muted">{{ thoughtStepTarget(step) }}</span>
                 </div>
-                <div v-if="step.query" class="thought-step-query">{{ step.type === 'tool' ? '' : '查询：' }}{{ step.query }}</div>
-                <div v-if="step.detail" class="thought-step-detail">{{ step.detail }}</div>
+                <ul
+                  v-if="step.type === 'tool' && step.showSources && step.sources?.length"
+                  class="thought-sources"
+                >
+                  <li v-for="(src, sri) in step.sources" :key="sri" :class="src.kind">
+                    <div class="thought-source-line">
+                      <span class="thought-step-verb nested">{{ src.kind === 'web' ? 'Opened' : 'Read' }}</span>
+                      <a
+                        v-if="src.kind === 'web' && src.url"
+                        class="thought-source-title"
+                        :href="src.url"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >{{ src.title || src.url }}</a>
+                      <span v-else class="thought-source-title local">{{ src.title || src.fileName || '本地文档' }}</span>
+                    </div>
+                    <div v-if="src.snippet" class="thought-source-snippet">{{ src.snippet }}</div>
+                  </li>
+                </ul>
               </li>
-            </ol>
+            </ul>
           </div>
           <div class="message-content" v-html="formatContent(msg.content)"></div>
           <div v-if="msg.role === 'assistant' && (msg.durationMs || msg.timing)" class="message-meta">
@@ -97,21 +129,56 @@
               <span class="thought-chevron">{{ showLiveThought ? '▾' : '▸' }}</span>
               <span class="thought-live-label">{{ thoughtLabel(streamThoughtSteps, true, elapsedMs) }}</span>
             </button>
-            <ol v-if="showLiveThought" class="thought-steps">
-              <li v-for="(step, si) in streamThoughtSteps" :key="si" :class="[step.type, step.status]">
-                <div class="thought-step-label">
-                  <span class="thought-step-verb">{{ thoughtStepTitle(step) }}</span>
+            <ul v-if="showLiveThought" class="thought-steps">
+              <li
+                v-for="(step, si) in streamThoughtSteps"
+                :key="si"
+                :class="[step.type, step.status, { expandable: step.type === 'tool' && step.sources?.length }]"
+              >
+                <button
+                  v-if="step.type === 'tool' && step.sources?.length"
+                  type="button"
+                  class="thought-step-row"
+                  @click="step.showSources = !step.showSources"
+                >
+                  <span class="thought-expand">{{ step.showSources ? '▾' : '▸' }}</span>
+                  <span class="thought-step-verb">{{ thoughtStepVerb(step) }}</span>
+                  <span class="thought-step-target">{{ thoughtStepTarget(step) }}</span>
                   <span v-if="step.repeat > 1" class="thought-repeat">×{{ step.repeat }}</span>
-                  <span v-if="thoughtStepDuration(step)" class="thought-step-ms">{{ thoughtStepDuration(step) }}</span>
+                </button>
+                <div v-else class="thought-step-row">
+                  <span class="thought-expand spacer"></span>
+                  <span class="thought-step-verb">{{ thoughtStepVerb(step) }}</span>
+                  <span v-if="thoughtStepTarget(step)" class="thought-step-target muted">{{ thoughtStepTarget(step) }}</span>
                 </div>
-                <div v-if="step.query" class="thought-step-query">{{ step.query }}</div>
-                <div v-if="step.detail" class="thought-step-detail">{{ step.detail }}</div>
+                <ul
+                  v-if="step.type === 'tool' && step.showSources && step.sources?.length"
+                  class="thought-sources"
+                >
+                  <li v-for="(src, sri) in step.sources" :key="sri" :class="src.kind">
+                    <div class="thought-source-line">
+                      <span class="thought-step-verb nested">{{ src.kind === 'web' ? 'Opened' : 'Read' }}</span>
+                      <a
+                        v-if="src.kind === 'web' && src.url"
+                        class="thought-source-title"
+                        :href="src.url"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >{{ src.title || src.url }}</a>
+                      <span v-else class="thought-source-title local">{{ src.title || src.fileName || '本地文档' }}</span>
+                    </div>
+                    <div v-if="src.snippet" class="thought-source-snippet">{{ src.snippet }}</div>
+                  </li>
+                </ul>
               </li>
               <li v-if="!streamThoughtSteps.length" class="status">
-                <div class="thought-step-label">分析问题</div>
-                <div class="thought-step-detail">正在理解问题…</div>
+                <div class="thought-step-row">
+                  <span class="thought-expand spacer"></span>
+                  <span class="thought-step-verb">Thinking</span>
+                  <span class="thought-step-target muted">正在理解问题…</span>
+                </div>
               </li>
-            </ol>
+            </ul>
           </div>
           <div
             v-if="streamContent"
@@ -209,7 +276,7 @@ import { UserFilled, Upload, UploadFilled } from '@element-plus/icons-vue'
 import { sendMessageStream, getMessages, newSession } from '../api/chat'
 import { getModelConfigs } from '../api/modelConfig'
 import { uploadDocument } from '../api/document'
-import { formatMessage, formatDuration, formatTimingDetails, thoughtSummaryLabel, extractThoughtSteps, thoughtStepTitle, thoughtStepDuration } from '../utils/formatMessage'
+import { formatMessage, formatDuration, formatTimingDetails, thoughtSummaryLabel, extractThoughtSteps, extractSources, thoughtStepVerb, thoughtStepTarget } from '../utils/formatMessage'
 
 const route = useRoute()
 const router = useRouter()
@@ -291,6 +358,7 @@ const loadMessages = async (sessionId) => {
         content: m.content,
         timing,
         thoughtSteps,
+        sources: extractSources(rawMeta),
         durationMs: timing?.totalMs ?? null,
         showTiming: false,
         showThought: false,
@@ -358,7 +426,14 @@ const handleSend = async () => {
           timing = t
         },
         onEvent: (_event, steps) => {
-          streamThoughtSteps.value = [...steps]
+          const prevById = {}
+          for (const s of streamThoughtSteps.value || []) {
+            if (s?.callId) prevById[s.callId] = s.showSources
+          }
+          streamThoughtSteps.value = (steps || []).map((s) => ({
+            ...s,
+            showSources: s.callId ? !!prevById[s.callId] : !!s.showSources,
+          }))
           scrollBottom()
         },
       }
@@ -370,6 +445,7 @@ const handleSend = async () => {
     const clientMs = finishElapsed()
     durationMs = timing?.totalMs ?? clientMs
     const answer = full || streamContent.value
+    const sources = extractSources({ thoughtSteps })
     messages.value.push({
       role: 'assistant',
       content: answer
@@ -378,12 +454,14 @@ const handleSend = async () => {
       durationMs,
       timing,
       thoughtSteps,
+      sources,
       showTiming: false,
       showThought: false,
     })
   } catch (err) {
     durationMs = finishElapsed()
     thoughtSteps = streamThoughtSteps.value || []
+    const sources = extractSources({ thoughtSteps })
     aborted = abortController.signal.aborted || err?.name === 'AbortError'
     if (streamContent.value) {
       messages.value.push({
@@ -392,6 +470,7 @@ const handleSend = async () => {
         durationMs,
         timing,
         thoughtSteps,
+        sources,
         showTiming: !!timing,
         showThought: false,
       })
@@ -402,6 +481,7 @@ const handleSend = async () => {
         durationMs,
         timing,
         thoughtSteps,
+        sources,
         showTiming: !!timing,
         showThought: thoughtSteps.length > 0,
       })
@@ -412,6 +492,7 @@ const handleSend = async () => {
         durationMs,
         timing,
         thoughtSteps,
+        sources,
         showTiming: !!timing,
         showThought: thoughtSteps.length > 0,
       })
@@ -606,8 +687,8 @@ onUnmounted(() => {
   gap: 8px;
 }
 .thought-panel {
-  margin-bottom: 6px;
-  max-width: 560px;
+  margin-bottom: 8px;
+  max-width: 640px;
 }
 .thought-toggle {
   display: inline-flex;
@@ -615,97 +696,165 @@ onUnmounted(() => {
   gap: 6px;
   border: none;
   background: transparent;
-  color: #6b7280;
+  color: #9ca3af;
   cursor: pointer;
   font-size: 13px;
   padding: 2px 0;
   line-height: 1.4;
 }
 .thought-toggle:hover {
-  color: #374151;
+  color: #6b7280;
 }
 .thought-chevron {
   font-size: 11px;
   width: 12px;
   display: inline-block;
+  color: #9ca3af;
 }
 .thought-live-label {
-  color: #6b7280;
-  font-style: italic;
+  color: #9ca3af;
 }
 .thought-panel.live .thought-live-label {
   animation: thoughtPulse 1.4s ease-in-out infinite;
 }
 @keyframes thoughtPulse {
-  0%, 100% { opacity: 0.65; }
+  0%, 100% { opacity: 0.55; }
   50% { opacity: 1; }
 }
 .thought-steps {
   list-style: none;
-  margin: 6px 0 8px;
-  padding: 10px 12px;
-  background: #f8fafc;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  margin: 4px 0 2px;
+  padding: 0 0 0 2px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 2px;
 }
 .thought-steps li {
-  padding-left: 10px;
-  border-left: 2px solid #d1d5db;
+  padding: 0;
+  border: none;
 }
-.thought-steps li.tool {
-  border-left-color: #3b82f6;
-}
-.thought-steps li.status {
-  border-left-color: #9ca3af;
-}
-.thought-step-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: #374151;
+.thought-step-row {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  flex-wrap: wrap;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  margin: 0;
+  text-align: left;
+  cursor: default;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #6b7280;
+}
+button.thought-step-row {
+  cursor: pointer;
+}
+button.thought-step-row:hover .thought-step-target {
+  color: #111827;
+}
+.thought-expand {
+  color: #c0c4cc;
+  font-size: 10px;
+  width: 10px;
+  flex-shrink: 0;
+  display: inline-block;
+  text-align: center;
+}
+.thought-expand.spacer {
+  visibility: hidden;
 }
 .thought-step-verb {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12.5px;
-  font-weight: 600;
-}
-.thought-step-ms {
-  margin-left: auto;
-  font-size: 11px;
-  font-weight: 500;
+  flex-shrink: 0;
   color: #9ca3af;
-  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+  font-size: 13px;
+}
+.thought-step-verb.nested {
+  font-size: 12px;
 }
 .thought-steps li.running .thought-step-verb {
-  color: #2563eb;
+  color: #6b7280;
 }
-.thought-steps li.done .thought-step-verb {
+.thought-step-target {
   color: #374151;
+  font-weight: 500;
+  word-break: break-word;
+  min-width: 0;
+}
+.thought-step-target.muted {
+  color: #9ca3af;
+  font-weight: 400;
 }
 .thought-repeat {
   font-size: 11px;
+  color: #c0c4cc;
+}
+.thought-sources {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0 0 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.thought-source-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.thought-source-title {
+  color: #374151;
   font-weight: 500;
+  text-decoration: none;
+  word-break: break-word;
+}
+.thought-source-title:hover {
+  color: #111827;
+  text-decoration: underline;
+}
+.thought-source-title.local {
+  cursor: default;
+}
+.thought-source-title.local:hover {
+  text-decoration: none;
+}
+.thought-source-snippet {
+  margin: 0 0 0 52px;
+  font-size: 12px;
   color: #9ca3af;
+  line-height: 1.45;
 }
-.thought-step-query {
-  margin-top: 2px;
-  font-size: 12px;
-  color: #2563eb;
-  word-break: break-word;
+.message-content :deep(.cite-chip) {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  max-width: 100%;
+  margin: 0 2px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #111827;
+  color: #f9fafb;
+  font-size: 11px;
+  line-height: 1.6;
+  text-decoration: none;
+  vertical-align: middle;
 }
-.thought-step-detail {
-  margin-top: 2px;
-  font-size: 12px;
-  color: #6b7280;
-  line-height: 1.5;
-  word-break: break-word;
-  white-space: pre-wrap;
+.message-content :deep(.cite-chip:hover) {
+  background: #1f2937;
+}
+.message-content :deep(.cite-label) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+.message-content :deep(.cite-host) {
+  opacity: 0.7;
+  font-size: 10px;
 }
 .message-content {
   padding: 12px 16px;

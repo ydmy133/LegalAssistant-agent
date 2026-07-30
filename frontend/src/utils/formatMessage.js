@@ -1,5 +1,5 @@
 /**
- * 将助手消息转为安全 HTML（换行、加粗等轻量 Markdown）
+ * 将助手消息转为安全 HTML（换行、加粗、Markdown 链接→引用芯片）
  */
 export function formatMessage(text) {
   if (!text) return ''
@@ -9,9 +9,91 @@ export function formatMessage(text) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
 
-  return escaped
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\n/g, '<br>')
+  // 先处理加粗，再把 [text](url) 换成引用芯片（url 已在 escape 后仍是纯文本）
+  const withBold = escaped.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  const withLinks = withBold.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+    (_, label, url) => renderCiteChip(label, url)
+  )
+  // 正文中残留的裸 URL 也渲染为芯片（跳过已在属性中的 URL）
+  const withBare = withLinks.replace(
+    /(?<!["'=/])https?:\/\/[^\s<>"')\]]+/g,
+    (url) => {
+      let label = url
+      try {
+        label = new URL(url).hostname.replace(/^www\./, '')
+      } catch {
+        /* keep url */
+      }
+      return renderCiteChip(label, url)
+    }
+  )
+
+  return withBare.replace(/\n/g, '<br>')
+}
+
+function renderCiteChip(label, url) {
+  const safeUrl = escapeAttr(url)
+  let host = ''
+  try {
+    host = new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    host = ''
+  }
+  const shortLabel = label.length > 28 ? `${label.slice(0, 28)}…` : label
+  const hostHtml = host
+    ? `<span class="cite-host">${escapeHtml(host)}</span>`
+    : ''
+  return `<a class="cite-chip" href="${safeUrl}" target="_blank" rel="noopener noreferrer" title="${safeUrl}"><span class="cite-label">${escapeHtml(shortLabel)}</span>${hostHtml}</a>`
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function escapeAttr(s) {
+  return escapeHtml(s).replace(/'/g, '&#39;')
+}
+
+/**
+ * 从 metadata 提取去重后的来源（优先 metadata.sources，否则从 thoughtSteps 汇总）
+ */
+export function extractSources(metaOrRaw) {
+  if (!metaOrRaw) return []
+  try {
+    const meta = typeof metaOrRaw === 'string' ? JSON.parse(metaOrRaw) : metaOrRaw
+    if (Array.isArray(meta?.sources) && meta.sources.length) {
+      return meta.sources
+    }
+    return collectSourcesFromThought(meta?.thoughtSteps)
+  } catch {
+    return []
+  }
+}
+
+export function collectSourcesFromThought(steps) {
+  if (!Array.isArray(steps)) return []
+  const out = []
+  const seen = new Set()
+  for (const step of steps) {
+    if (!step || step.type !== 'tool' || !Array.isArray(step.sources)) continue
+    for (const s of step.sources) {
+      if (!s) continue
+      const key = s.url ? `u:${s.url}` : `f:${s.fileName || s.title || ''}`
+      if (!key || key.endsWith(':') || seen.has(key)) continue
+      seen.add(key)
+      out.push(s)
+    }
+  }
+  return out
+}
+
+export function webSourcesOnly(sources) {
+  return (sources || []).filter((s) => s && s.kind === 'web' && s.url)
 }
 
 export function formatDuration(ms) {
@@ -122,7 +204,7 @@ export function extractThoughtSteps(metaOrRaw) {
 }
 
 /**
- * 合并连续相同步骤；同 name 的 tool/status 生命周期（running→done）合并为一行。
+ * 合并连续相同步骤；工具按 callId 合并 running→done；status 按 name 合并。
  */
 export function dedupeThoughtSteps(steps) {
   if (!Array.isArray(steps) || steps.length === 0) return []
@@ -131,7 +213,10 @@ export function dedupeThoughtSteps(steps) {
     if (!step) continue
     const upsertIdx = findUpsertIndex(out, step)
     if (upsertIdx >= 0) {
-      out[upsertIdx] = { ...out[upsertIdx], ...step }
+      const merged = { ...out[upsertIdx], ...step }
+      if (Array.isArray(step.sources)) merged.sources = step.sources
+      else if (Array.isArray(out[upsertIdx].sources)) merged.sources = out[upsertIdx].sources
+      out[upsertIdx] = merged
       continue
     }
     const prev = out[out.length - 1]
@@ -150,8 +235,17 @@ export function dedupeThoughtSteps(steps) {
 
 function findUpsertIndex(steps, step) {
   const type = step.type || ''
+  if (type === 'tool' && step.callId) {
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const prev = steps[i]
+      if ((prev.type || '') === 'tool' && prev.callId === step.callId) {
+        return i
+      }
+    }
+    return -1
+  }
   const name = step.name
-  if (!name || (type !== 'tool' && type !== 'status')) return -1
+  if (!name || type !== 'status') return -1
   for (let i = steps.length - 1; i >= 0; i--) {
     const prev = steps[i]
     if ((prev.type || '') === type && prev.name === name) {
@@ -162,19 +256,34 @@ function findUpsertIndex(steps, step) {
 }
 
 function thoughtStepKey(step) {
-  return [step.type || '', step.label || '', step.query || '', step.name || ''].join('\u0001')
+  return [step.type || '', step.label || '', step.query || '', step.name || '', step.callId || ''].join('\u0001')
 }
 
 const TOOL_VERB = {
-  searchLegalKnowledge: '检索',
-  searchWeb: '搜索',
-  searchCases: '查阅',
-  getCaseDetail: '查阅',
-  getConversationHistory: '查阅',
+  searchLegalKnowledge: 'Searched',
+  searchWeb: 'Searched web',
+  searchCases: 'Searched cases',
+  getCaseDetail: 'Read case',
+  getConversationHistory: 'Recalled',
+}
+
+const TOOL_LINE_VERB = {
+  searchLegalKnowledge: 'Searched',
+  searchWeb: 'Searched',
+  searchCases: 'Searched',
+  getCaseDetail: 'Read',
+  getConversationHistory: 'Recalled',
+}
+
+const STATUS_VERB = {
+  analyze: 'Thinking',
+  context: 'Recalled context',
+  skip_retrieve: 'Skipped retrieval',
+  generate: 'Composing',
 }
 
 /**
- * Thought 面板标题：流式中 / 完成后 verb-group（类 Cursor / grok-build）
+ * Thought 面板标题：流式中 / 完成后 verb-group（类 Cursor）
  */
 export function thoughtSummaryLabel(steps, { streaming = false, totalMs = null } = {}) {
   if (!steps || steps.length === 0) {
@@ -184,10 +293,13 @@ export function thoughtSummaryLabel(steps, { streaming = false, totalMs = null }
   if (streaming) {
     const last = steps[steps.length - 1]
     if (last?.type === 'tool') {
-      const verb = last.status === 'done' ? 'Ran' : 'Running'
-      return `${verb} ${last.label || last.name}…`
+      const verb = last.status === 'running'
+        ? `Running ${TOOL_LINE_VERB[last.name] || 'tool'}`
+        : (TOOL_LINE_VERB[last.name] || 'Ran')
+      const target = thoughtStepTarget(last)
+      return target ? `${verb} ${target}…` : `${verb}…`
     }
-    return last?.label ? `${last.label}…` : 'Thinking…'
+    return `${thoughtStepVerb(last)}…`
   }
 
   const tools = steps.filter((s) => s.type === 'tool')
@@ -199,27 +311,61 @@ export function thoughtSummaryLabel(steps, { streaming = false, totalMs = null }
 
   const groups = {}
   for (const t of tools) {
-    const verb = TOOL_VERB[t.name] || '调用'
+    const verb = TOOL_VERB[t.name] || 'Ran'
     groups[verb] = (groups[verb] || 0) + (t.repeat || 1)
   }
   const parts = Object.entries(groups).map(([verb, n]) =>
-    n === 1 ? verb : `${verb} ${n} 次`
+    n === 1 ? `${verb} 1` : `${verb} ${n}`
   )
   return `Thought${durationPart} · ${parts.join(', ')}`
 }
 
-/** 单步行标题：Ran 检索法律知识库 (1.3s) */
+/** Cursor 风格：行首动词（灰） */
+export function thoughtStepVerb(step) {
+  if (!step) return 'Step'
+  if (step.type === 'tool') {
+    const base = TOOL_LINE_VERB[step.name] || 'Ran'
+    if (step.status === 'running') return `Running ${base.toLowerCase()}`
+    return base
+  }
+  return STATUS_VERB[step.name] || step.label || 'Thought'
+}
+
+/** Cursor 风格：动词后的目标（文件名 / 查询 / 摘要） */
+export function thoughtStepTarget(step) {
+  if (!step) return ''
+  if (step.type === 'tool') {
+    const sources = Array.isArray(step.sources) ? step.sources : []
+    if (sources.length) {
+      const first = sources[0]
+      const name = first.fileName || first.title || first.url || ''
+      const short = truncateText(name, 48)
+      if (sources.length === 1) return short
+      return `${truncateText(name, 36)}, ${sources.length - 1} more`
+    }
+    const q = (step.query || '').trim()
+    if (q) return truncateText(q, 56)
+    return truncateText(step.detail || step.label || '', 48)
+  }
+  return step.detail || ''
+}
+
+function truncateText(s, max) {
+  const t = String(s || '').replace(/\s+/g, ' ').trim()
+  if (t.length <= max) return t
+  return `${t.slice(0, max - 1)}…`
+}
+
+/** @deprecated 兼容旧调用；优先用 thoughtStepVerb + thoughtStepTarget */
 export function thoughtStepTitle(step) {
   if (!step) return '步骤'
-  const label = step.label || step.name || '步骤'
-  if (step.type === 'tool') {
-    const prefix = step.status === 'running' ? 'Running' : 'Ran'
-    return `${prefix} ${label}`
-  }
-  return label
+  const verb = thoughtStepVerb(step)
+  const target = thoughtStepTarget(step)
+  return target ? `${verb} ${target}` : verb
 }
 
 export function thoughtStepDuration(step) {
   if (step?.durationMs == null) return ''
   return formatDuration(step.durationMs)
 }
+
