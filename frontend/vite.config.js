@@ -8,6 +8,8 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     port: 3000,
+    // Cloudflare Quick Tunnel 每次域名不同，需放行 *.trycloudflare.com
+    allowedHosts: ['.trycloudflare.com', 'localhost', '127.0.0.1'],
     proxy: {
       '/api': {
         target: apiProxy,
