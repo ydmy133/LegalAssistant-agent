@@ -1,0 +1,1 @@
+import{r as n}from"./request-DDQnw-RU.js";function a(t){const e=new FormData;return e.append("file",t),n.post("/documents/upload",e,{headers:{"Content-Type":"multipart/form-data"}})}function r(t=1,e=10){return n.get("/documents",{params:{page:t,size:e}})}function u(t){return n.delete(`/documents/${t}`)}export{u as d,r as g,a as u};
