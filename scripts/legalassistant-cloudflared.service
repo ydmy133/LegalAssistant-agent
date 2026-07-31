@@ -1,0 +1,16 @@
+[Unit]
+Description=LegalAssistant Cloudflare Quick Tunnel
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 指向生产构建 nginx（3080），勿直连 Vite:3000（大模块经隧道易白屏）
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:3080
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/legalassistant-cloudflared.log
+StandardError=append:/var/log/legalassistant-cloudflared.log
+
+[Install]
+WantedBy=multi-user.target
